@@ -1,0 +1,14 @@
+# 影片轉換器依賴套件
+# Video Converter Dependencies
+
+# 核心依賴（Python 標準庫已包含，無需額外套件）
+# Core dependencies (included in Python standard library)
+
+# 可選依賴（用於進階功能）
+# Optional dependencies (for advanced features)
+
+# 注意：此專案主要依賴 FFmpeg，需要單獨安裝
+# Note: This project primarily depends on FFmpeg, which needs to be installed separately
+
+# Python 版本要求
+# Python version requirement: 3.7+
