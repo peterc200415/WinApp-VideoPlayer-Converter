@@ -8,7 +8,7 @@ import subprocess
 import threading
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
-from .encoder_detector import EncoderDetector
+from .encoder_detector import EncoderDetector, find_ffmpeg
 from .sequence_manager import SequenceManager
 
 
@@ -23,7 +23,10 @@ class VideoConverter:
         bitrate: str = "1000k",
         threads: int = 1,
         timeout: int = 300,
-        sequence_manager: Optional[SequenceManager] = None
+        sequence_manager: Optional[SequenceManager] = None,
+        preset: str = "medium",
+        use_crf: bool = False,
+        crf: int = 23
     ):
         """
         初始化轉換器
@@ -36,6 +39,9 @@ class VideoConverter:
             threads: 執行緒數
             timeout: 超時時間（秒）
             sequence_manager: 序列號管理器（可選）
+            preset: 編碼預設 (ultrafast, fast, medium, slow, veryslow)
+            use_crf: 使用 CRF 模式而非 bitrate
+            crf: CRF 值 (0-51, 較低 = 較高品質)
         """
         self.encoder_detector = EncoderDetector()
         self.encoder = encoder
@@ -46,6 +52,10 @@ class VideoConverter:
         self.timeout = timeout
         self.sequence_manager = sequence_manager or SequenceManager()
         self._stop_event = threading.Event()
+        self.preset = preset
+        self.use_crf = use_crf
+        self.crf = crf
+        self._last_error: Optional[str] = None
     
     def _get_encoder(self) -> str:
         """取得要使用的編碼器"""
@@ -70,54 +80,193 @@ class VideoConverter:
         Returns:
             FFmpeg 命令列表
         """
-        command = ["ffmpeg", "-threads", str(self.threads), "-i", input_path]
+        command = [find_ffmpeg(), "-threads", str(self.threads), "-y"]
+        
+        # 根據編碼器添加硬體加速參數 (必須在 -i 之前)
+        if encoder in ["h264_nvenc", "hevc_nvenc"]:
+            command.extend(["-hwaccel", "cuda"])
+            command.extend(["-hwaccel_output_format", "cuda"])
+        elif encoder in ["h264_qsv", "hevc_qsv"]:
+            command.extend(["-init_hw_device", "qsv=hw"])
+            command.extend(["-filter_hw_device", "hw"])
+            command.extend(["-hwaccel", "qsv"])
+            command.extend(["-hwaccel_output_format", "qsv"])
+        
+        command.extend(["-i", input_path])
         
         # 根據編碼器添加特定參數
         if encoder == "h264_nvenc":
             command.extend(["-c:v", "h264_nvenc"])
-            command.extend(["-b:v", self.bitrate])
-            command.extend(["-vf", f"scale={self.width}:{self.height}"])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
+            command.extend(["-vf", f"scale_cuda={self.width}:{self.height}"])
+        elif encoder == "hevc_nvenc":
+            command.extend(["-c:v", "hevc_nvenc"])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
+            command.extend(["-vf", f"scale_cuda={self.width}:{self.height}"])
         elif encoder == "h264_qsv":
-            command.extend([
-                "-init_hw_device", "qsv=hw",
-                "-filter_hw_device", "hw",
-                "-hwaccel", "qsv"
-            ])
             command.extend(["-c:v", "h264_qsv"])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
             command.extend(["-vf", f"scale_qsv=w={self.width}:h={self.height}"])
-            command.extend(["-b:v", self.bitrate])
+        elif encoder == "hevc_qsv":
+            command.extend(["-c:v", "hevc_qsv"])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
+            command.extend(["-vf", f"scale_qsv=w={self.width}:h={self.height}"])
         elif encoder == "h264_amf":
             command.extend(["-c:v", "h264_amf"])
-            command.extend(["-b:v", self.bitrate])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
             command.extend(["-vf", f"scale={self.width}:{self.height}"])
-        else:  # libx264 或其他軟體編碼器
+        elif encoder == "hevc_amf":
+            command.extend(["-c:v", "hevc_amf"])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
+            command.extend(["-vf", f"scale={self.width}:{self.height}"])
+        else:  # libx264, libx265 或其他軟體編碼器
             command.extend(["-c:v", encoder])
-            command.extend(["-b:v", self.bitrate])
+            command.extend(["-preset", self.preset])
+            if self.use_crf:
+                command.extend(["-crf", str(self.crf)])
+            else:
+                command.extend(["-b:v", self.bitrate])
             command.extend(["-vf", f"scale={self.width}:{self.height}"])
+        
+        # 複製音效
+        command.extend(["-c:a", "aac"])
         
         # 輸出檔案
         command.append(output_path)
         
         return command
     
-    def _parse_progress(self, line: str) -> Optional[Dict[str, Any]]:
+    def _parse_progress(self, line: str, duration: float = 0) -> Optional[Dict[str, Any]]:
         """
         解析 FFmpeg 進度輸出
         
         Args:
             line: FFmpeg 輸出行
+            duration: 影片總時長（秒）
         
         Returns:
             進度資訊字典或 None
         """
+        result = {}
+        
         # 解析 frame=xxx 格式
         frame_match = re.search(r'frame=\s*(\d+)', line)
         if frame_match:
-            return {
-                "frame": int(frame_match.group(1)),
-                "raw_line": line
-            }
+            result["frame"] = int(frame_match.group(1))
+        
+        # 解析 time=hh:mm:ss.ms 格式
+        time_match = re.search(r'time=(\d+):(\d+):(\d+\.\d+)', line)
+        if time_match:
+            hours = int(time_match.group(1))
+            minutes = int(time_match.group(2))
+            seconds = float(time_match.group(3))
+            current_time = hours * 3600 + minutes * 60 + seconds
+            result["time"] = current_time
+            
+            # 計算百分比
+            if duration > 0:
+                result["percent"] = min(100, (current_time / duration) * 100)
+        
+        if result:
+            result["raw_line"] = line
+            return result
         return None
+    
+    def get_video_duration(self, input_path: str) -> float:
+        """取得影片時長（秒）"""
+        import json
+        ffprobe_path = find_ffmpeg().replace("ffmpeg", "ffprobe")
+        
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe_path or "ffprobe",
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format",
+                    input_path
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                encoding="utf-8"
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                return float(data.get("format", {}).get("duration", 0))
+        except Exception:
+            pass
+        return 0
+    
+    def get_video_info(self, input_path: str) -> Dict[str, Any]:
+        """取得影片資訊"""
+        import json
+        ffmpeg_path = find_ffmpeg()
+        if ffmpeg_path.endswith("ffmpeg.exe"):
+            ffprobe_path = ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
+        elif ffmpeg_path == "ffmpeg":
+            ffprobe_path = "ffprobe"
+        else:
+            ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
+        
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe_path or "ffprobe",
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format",
+                    "-show_streams",
+                    input_path
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                encoding="utf-8"
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                info = {"duration": 0, "width": 0, "height": 0, "format": "", "codec": ""}
+                
+                if "format" in data:
+                    info["duration"] = float(data["format"].get("duration", 0))
+                    info["format"] = data["format"].get("format_name", "")
+                
+                for stream in data.get("streams", []):
+                    if stream.get("codec_type") == "video":
+                        info["width"] = stream.get("width", 0)
+                        info["height"] = stream.get("height", 0)
+                        info["codec"] = stream.get("codec_name", "")
+                        break
+                
+                return info
+        except Exception:
+            pass
+        return {"duration": 0, "width": 0, "height": 0, "format": "", "codec": ""}
     
     def convert(
         self,
@@ -153,6 +302,10 @@ class VideoConverter:
         # 確保輸出目錄存在
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # 取得影片資訊
+        video_info = self.get_video_info(str(input_path))
+        duration = video_info.get("duration", 0)
+        
         # 取得編碼器
         encoder = self._get_encoder()
         
@@ -162,6 +315,9 @@ class VideoConverter:
             str(output_path),
             encoder
         )
+        
+        self._last_error = None
+        stderr_output = []
         
         try:
             # 啟動 FFmpeg 程序
@@ -179,15 +335,21 @@ class VideoConverter:
                     process.kill()
                     if output_path.exists():
                         output_path.unlink()
+                    self._last_error = "轉換被使用者停止"
                     return False
                 
                 line = process.stderr.readline()
                 if not line and process.poll() is not None:
                     break
                 
+                stderr_output.append(line)
+                
                 if line and progress_callback:
-                    progress = self._parse_progress(line)
+                    progress = self._parse_progress(line, duration)
                     if progress:
+                        progress["video_info"] = video_info
+                        if hasattr(self, '_file_progress_callback') and self._file_progress_callback:
+                            self._file_progress_callback(progress)
                         progress_callback(progress)
             
             # 等待程序完成
@@ -196,6 +358,10 @@ class VideoConverter:
             if process.returncode == 0:
                 return True
             else:
+                # 收集錯誤訊息
+                full_error = "".join(stderr_output) + stderr
+                self._last_error = full_error
+                
                 # 轉換失敗，刪除不完整的輸出檔案
                 if output_path.exists():
                     output_path.unlink()
@@ -206,8 +372,10 @@ class VideoConverter:
             process.communicate()
             if output_path.exists():
                 output_path.unlink()
+            self._last_error = f"轉換超時 ({self.timeout}秒)"
             raise TimeoutError(f"轉換超時: {input_path}")
         except Exception as e:
+            self._last_error = str(e)
             if output_path.exists():
                 output_path.unlink()
             raise
@@ -220,12 +388,17 @@ class VideoConverter:
         """重置停止標誌"""
         self._stop_event.clear()
     
+    def get_last_error(self) -> Optional[str]:
+        """取得最後的錯誤訊息"""
+        return self._last_error
+    
     def convert_batch(
         self,
         input_files: list,
         output_folder: str,
         delete_original: bool = False,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        file_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         """
         批次轉換影片
@@ -235,6 +408,7 @@ class VideoConverter:
             output_folder: 輸出資料夾
             delete_original: 是否刪除原始檔案
             progress_callback: 進度回調函數 (current, total, filename)
+            file_progress_callback: 檔案轉換進度回調 (包含 percent, time, video_info)
         
         Returns:
             轉換結果統計
@@ -248,6 +422,9 @@ class VideoConverter:
         failed = 0
         failed_files = []
         
+        # 儲存 file_progress_callback 以便在 convert 中使用
+        self._file_progress_callback = file_progress_callback
+        
         for idx, input_file in enumerate(input_files):
             if self._stop_event.is_set():
                 break
@@ -256,9 +433,16 @@ class VideoConverter:
                 progress_callback(idx, total, str(input_file))
             
             try:
+                # 取得影片資訊（用於檔名）
+                video_info = self.get_video_info(str(input_file))
+                height = video_info.get("height", 0)
+                
                 # 生成輸出檔名
                 seq = self.sequence_manager.get_next()
-                output_filename = f"av{seq:04d}.mp4"
+                if height > 0:
+                    output_filename = f"av-{height}p-{seq:04d}.mp4"
+                else:
+                    output_filename = f"av-{seq:04d}.mp4"
                 output_path = output_folder / output_filename
                 
                 # 轉換

@@ -2,8 +2,69 @@
 硬體加速編碼器偵測模組
 自動偵測系統可用的硬體加速編碼器
 """
+import os
+import re
 import subprocess
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+
+FFMPEG_PATHS = [
+    "C:/ffmpeg/bin/ffmpeg.exe",
+    "C:/ffmpeg/ffmpeg.exe",
+    "ffmpeg",
+]
+
+
+def find_ffmpeg() -> str:
+    """搜尋 FFmpeg 可執行檔"""
+    for path in FFMPEG_PATHS:
+        if path == "ffmpeg":
+            return path
+        if os.path.isfile(path):
+            return path
+    return "ffmpeg"
+
+
+def check_nvidia_driver() -> Tuple[bool, str]:
+    """
+    檢查 NVIDIA 驅動程式版本
+    
+    Returns:
+        (是否支援, 訊息)
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            encoding="utf-8"
+        )
+        if result.returncode != 0:
+            return False, "無法取得 NVIDIA 驅動版本"
+        
+        driver_version = result.stdout.strip()
+        
+        # 解析驅動版本號
+        match = re.match(r'(\d+)\.(\d+)', driver_version)
+        if not match:
+            return True, f"驅動版本: {driver_version}"
+        
+        major = int(match.group(1))
+        minor = int(match.group(2))
+        
+        # NVENC 需要驅動版本 570.0 或更新 (12.2 API)
+        if major > 570:
+            return True, f"驅動版本 {driver_version} - 支援 NVENC"
+        elif major == 570 and minor >= 0:
+            return True, f"驅動版本 {driver_version} - 支援 NVENC"
+        else:
+            return False, f"驅動版本 {driver_version} 太舊，需要 570.0+ (當前 API: {major}.{minor})"
+            
+    except FileNotFoundError:
+        return False, "找不到 nvidia-smi"
+    except Exception as e:
+        return False, f"檢查驅動失敗: {e}"
 
 
 class EncoderDetector:
@@ -23,9 +84,11 @@ class EncoderDetector:
         if self._ffmpeg_available is not None:
             return self._ffmpeg_available
         
+        ffmpeg_path = find_ffmpeg()
+        
         try:
             result = subprocess.run(
-                ["ffmpeg", "-version"],
+                [ffmpeg_path, "-version"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=5
@@ -49,9 +112,11 @@ class EncoderDetector:
         if not self.check_ffmpeg():
             return False
         
+        ffmpeg_path = find_ffmpeg()
+        
         try:
             result = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-encoders"],
+                [ffmpeg_path, "-hide_banner", "-encoders"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=5,
@@ -65,8 +130,19 @@ class EncoderDetector:
         return False
     
     def _check_nvenc(self) -> bool:
-        """檢查 NVIDIA NVENC 是否可用"""
-        return self._check_encoder("h264_nvenc")
+        """檢查 NVIDIA NVENC 是否可用（包含驅動版本檢查）"""
+        if not self._check_encoder("h264_nvenc"):
+            return False
+        
+        # 檢查 NVIDIA 驅動版本
+        supported, message = check_nvidia_driver()
+        if not supported:
+            print(f"NVENC: {message}")
+        return supported
+    
+    def get_nvidia_driver_status(self) -> Tuple[bool, str]:
+        """取得 NVIDIA 驅動狀態"""
+        return check_nvidia_driver()
     
     def _check_qsv(self) -> bool:
         """檢查 Intel QSV 是否可用"""
@@ -75,6 +151,23 @@ class EncoderDetector:
     def _check_amf(self) -> bool:
         """檢查 AMD AMF 是否可用"""
         return self._check_encoder("h264_amf")
+    
+    def _check_hevc_amf(self) -> bool:
+        """檢查 AMD HEVC (H.265) AMF 是否可用"""
+        return self._check_encoder("hevc_amf")
+    
+    def _check_hevc_qsv(self) -> bool:
+        """檢查 Intel HEVC (H.265) QSV 是否可用"""
+        return self._check_encoder("hevc_qsv")
+    
+    def _check_hevc_nvenc(self) -> bool:
+        """檢查 NVIDIA HEVC (H.265) NVENC 是否可用"""
+        if not self._check_encoder("hevc_nvenc"):
+            return False
+        supported, message = check_nvidia_driver()
+        if not supported:
+            print(f"HEVC NVENC: {message}")
+        return supported
     
     def detect_available_encoders(self) -> List[str]:
         """
@@ -88,7 +181,17 @@ class EncoderDetector:
         
         encoders = []
         
-        # 硬體加速編碼器（按效能優先順序）
+        # HEVC (H.265) 硬體加速編碼器 - 放在最前面（最小容量）
+        if self._check_hevc_nvenc():
+            encoders.append("hevc_nvenc")
+        
+        if self._check_hevc_amf():
+            encoders.append("hevc_amf")
+        
+        if self._check_hevc_qsv():
+            encoders.append("hevc_qsv")
+        
+        # H.264 硬體加速編碼器
         if self._check_nvenc():
             encoders.append("h264_nvenc")
         
@@ -99,6 +202,9 @@ class EncoderDetector:
             encoders.append("h264_amf")
         
         # 軟體編碼作為備援
+        if self._check_encoder("libx265"):
+            encoders.append("libx265")
+        
         if self._check_encoder("libx264"):
             encoders.append("libx264")
         

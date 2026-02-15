@@ -1,6 +1,6 @@
 """
-主視窗模組
-提供現代化的圖形使用者介面
+Main Window Module
+Modern GUI for video conversion
 """
 import os
 import queue
@@ -20,20 +20,20 @@ from ..utils.file_utils import format_file_size, get_video_files
 
 
 class MainWindow:
-    """主視窗類別"""
+    """Main Window Class"""
     
     def __init__(self, root: Tk):
         """
-        初始化主視窗
+        Initialize Main Window
         
         Args:
-            root: Tkinter 根視窗
+            root: Tkinter root window
         """
         self.root = root
-        self.root.title("影片轉換器 - Video Converter")
+        self.root.title("Video Converter")
         self.root.geometry("900x700")
         
-        # 初始化組件
+        # Initialize components
         self.config = Config()
         self.encoder_detector = EncoderDetector()
         self.sequence_manager = SequenceManager(
@@ -41,64 +41,64 @@ class MainWindow:
         )
         self.converter: Optional[VideoConverter] = None
         
-        # 狀態變數
+        # State variables
         self.input_files: List[str] = []
         self.output_folder: StringVar = StringVar()
         self.is_converting = False
         self.stop_event = threading.Event()
         self.log_queue = queue.Queue()
         
-        # 建立 UI
+        # Build UI
         self.create_widgets()
         self.update_log_display()
         
-        # 載入配置
+        # Load config
         self.load_config_to_ui()
     
     def create_widgets(self):
-        """建立 UI 元件"""
-        # 主框架
+        """Create UI widgets"""
+        # Main frame
         main_frame = Frame(self.root, padx=10, pady=10)
         main_frame.pack(fill="both", expand=True)
         
-        # 標題
+        # Title
         title_label = Label(
             main_frame,
-            text="影片轉換器",
+            text="Video Converter",
             font=("Arial", 16, "bold")
         )
         title_label.pack(pady=(0, 10))
         
-        # 檔案選擇區域
-        file_frame = ttk.LabelFrame(main_frame, text="檔案選擇", padding=10)
+        # File selection area
+        file_frame = ttk.LabelFrame(main_frame, text="File Selection", padding=10)
         file_frame.pack(fill="x", pady=5)
         
         Button(
             file_frame,
-            text="選擇影片檔案",
+            text="Select Files",
             command=self.select_files
         ).pack(side="left", padx=5)
         
         Button(
             file_frame,
-            text="選擇資料夾",
+            text="Select Folder",
             command=self.select_folder
         ).pack(side="left", padx=5)
         
         self.file_count_label = Label(
             file_frame,
-            text="已選擇: 0 個檔案",
+            text="Selected: 0 files",
             fg="gray"
         )
         self.file_count_label.pack(side="left", padx=10)
         
-        # 輸出資料夾選擇
-        output_frame = ttk.LabelFrame(main_frame, text="輸出設定", padding=10)
+        # Output folder selection
+        output_frame = ttk.LabelFrame(main_frame, text="Output Settings", padding=10)
         output_frame.pack(fill="x", pady=5)
         
         Button(
             output_frame,
-            text="選擇輸出資料夾",
+            text="Select Output Folder",
             command=self.select_output_folder
         ).pack(side="left", padx=5)
         
@@ -109,38 +109,82 @@ class MainWindow:
         )
         self.output_label.pack(side="left", padx=10)
         
-        # 轉換設定區域
-        settings_frame = ttk.LabelFrame(main_frame, text="轉換設定", padding=10)
+        # Conversion settings area
+        settings_frame = ttk.LabelFrame(main_frame, text="Conversion Settings", padding=10)
         settings_frame.pack(fill="x", pady=5)
         
-        # 解析度設定
+        # Resolution setting
         res_frame = Frame(settings_frame)
         res_frame.pack(fill="x", pady=2)
         
-        Label(res_frame, text="寬度:").pack(side="left", padx=5)
+        Label(res_frame, text="Resolution:").pack(side="left", padx=5)
+        
+        RESOLUTION_PRESETS = {
+            "Original": (0, 0),
+            "4K (3840x2160)": (3840, 2160),
+            "1080p (1920x1080)": (1920, 1080),
+            "720p (1280x720)": (1280, 720),
+            "480p (854x480)": (854, 480),
+            "360p (640x360)": (640, 360),
+        }
+        
+        self.resolution_var = StringVar(value="720p (1280x720)")
+        
+        def on_resolution_change(*args):
+            selected = self.resolution_var.get()
+            if selected in RESOLUTION_PRESETS:
+                w, h = RESOLUTION_PRESETS[selected]
+                if w > 0 and h > 0:
+                    self.width_var.set(str(w))
+                    self.height_var.set(str(h))
+        
+        self.resolution_var.trace("w", on_resolution_change)
+        res_combo = ttk.Combobox(
+            res_frame,
+            textvariable=self.resolution_var,
+            values=list(RESOLUTION_PRESETS.keys()),
+            state="readonly",
+            width=20
+        )
+        res_combo.pack(side="left", padx=5)
+        
+        Label(res_frame, text="W:").pack(side="left", padx=10)
         self.width_var = StringVar(value=str(self.config.get("width", 1280)))
-        width_entry = ttk.Entry(res_frame, textvariable=self.width_var, width=10)
+        width_entry = ttk.Entry(res_frame, textvariable=self.width_var, width=8)
         width_entry.pack(side="left", padx=5)
         
-        Label(res_frame, text="高度:").pack(side="left", padx=5)
+        Label(res_frame, text="H:").pack(side="left", padx=5)
         self.height_var = StringVar(value=str(self.config.get("height", 720)))
-        height_entry = ttk.Entry(res_frame, textvariable=self.height_var, width=10)
+        height_entry = ttk.Entry(res_frame, textvariable=self.height_var, width=8)
         height_entry.pack(side="left", padx=5)
         
-        # 位元率設定
+        # Bitrate setting
         bitrate_frame = Frame(settings_frame)
         bitrate_frame.pack(fill="x", pady=2)
         
-        Label(bitrate_frame, text="位元率:").pack(side="left", padx=5)
+        Label(bitrate_frame, text="Bitrate:").pack(side="left", padx=5)
         self.bitrate_var = StringVar(value=self.config.get("bitrate", "1000k"))
         bitrate_entry = ttk.Entry(bitrate_frame, textvariable=self.bitrate_var, width=10)
         bitrate_entry.pack(side="left", padx=5)
         
-        # 編碼器選擇
+        # CRF mode
+        self.use_crf_var = BooleanVar(value=self.config.get("use_crf", False))
+        ttk.Checkbutton(
+            bitrate_frame,
+            text="Use CRF Quality Mode",
+            variable=self.use_crf_var
+        ).pack(side="left", padx=10)
+        
+        Label(bitrate_frame, text="CRF:").pack(side="left", padx=5)
+        self.crf_var = IntVar(value=self.config.get("crf", 23))
+        crf_spin = ttk.Spinbox(bitrate_frame, from_=0, to=51, width=5, textvariable=self.crf_var)
+        crf_spin.pack(side="left", padx=5)
+        
+        # Encoder selection
         encoder_frame = Frame(settings_frame)
         encoder_frame.pack(fill="x", pady=2)
         
-        Label(encoder_frame, text="編碼器:").pack(side="left", padx=5)
+        Label(encoder_frame, text="Encoder:").pack(side="left", padx=5)
         self.encoder_var = StringVar(value=self.config.get("encoder", "auto"))
         encoder_combo = ttk.Combobox(
             encoder_frame,
@@ -151,11 +195,26 @@ class MainWindow:
         )
         encoder_combo.pack(side="left", padx=5)
         
-        # 執行緒數
+        # Preset selection
+        preset_frame = Frame(settings_frame)
+        preset_frame.pack(fill="x", pady=2)
+        
+        Label(preset_frame, text="Preset:").pack(side="left", padx=5)
+        self.preset_var = StringVar(value=self.config.get("preset", "medium"))
+        preset_combo = ttk.Combobox(
+            preset_frame,
+            textvariable=self.preset_var,
+            values=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
+            state="readonly",
+            width=10
+        )
+        preset_combo.pack(side="left", padx=5)
+        
+        # Threads
         threads_frame = Frame(settings_frame)
         threads_frame.pack(fill="x", pady=2)
         
-        Label(threads_frame, text="執行緒數:").pack(side="left", padx=5)
+        Label(threads_frame, text="Threads:").pack(side="left", padx=5)
         self.threads_var = IntVar(value=self.config.get("threads", 1))
         threads_combo = ttk.Combobox(
             threads_frame,
@@ -166,7 +225,7 @@ class MainWindow:
         )
         threads_combo.pack(side="left", padx=5)
         
-        # 選項
+        # Options
         options_frame = Frame(settings_frame)
         options_frame.pack(fill="x", pady=2)
         
@@ -175,17 +234,17 @@ class MainWindow:
         )
         ttk.Checkbutton(
             options_frame,
-            text="轉換後刪除原始檔案",
+            text="Delete original files after conversion",
             variable=self.delete_original_var
         ).pack(side="left", padx=5)
         
-        # 控制按鈕區域
+        # Control buttons
         control_frame = Frame(main_frame)
         control_frame.pack(fill="x", pady=10)
         
         self.start_button = Button(
             control_frame,
-            text="開始轉換",
+            text="Start Conversion",
             command=self.start_conversion,
             bg="#4CAF50",
             fg="white",
@@ -197,7 +256,7 @@ class MainWindow:
         
         self.stop_button = Button(
             control_frame,
-            text="停止轉換",
+            text="Stop",
             command=self.stop_conversion,
             bg="#f44336",
             fg="white",
@@ -208,8 +267,8 @@ class MainWindow:
         )
         self.stop_button.pack(side="left", padx=5)
         
-        # 進度條
-        self.progress_var = StringVar(value="就緒")
+        # Progress
+        self.progress_var = StringVar(value="Ready")
         self.progress_label = Label(
             control_frame,
             textvariable=self.progress_var,
@@ -217,7 +276,7 @@ class MainWindow:
         )
         self.progress_label.pack(side="left", padx=10)
         
-        # 進度條
+        # Progress bar
         self.progress_bar = ttk.Progressbar(
             main_frame,
             mode="determinate",
@@ -225,11 +284,11 @@ class MainWindow:
         )
         self.progress_bar.pack(fill="x", pady=5)
         
-        # 日誌顯示區域
-        log_frame = ttk.LabelFrame(main_frame, text="日誌", padding=5)
+        # Log display area
+        log_frame = ttk.LabelFrame(main_frame, text="Log", padding=5)
         log_frame.pack(fill="both", expand=True, pady=5)
         
-        # 日誌文字區域
+        # Log text area
         log_text_frame = Frame(log_frame)
         log_text_frame.pack(fill="both", expand=True)
         
@@ -245,8 +304,8 @@ class MainWindow:
         log_scrollbar.pack(side="right", fill="y")
         self.log_text.config(yscrollcommand=log_scrollbar.set)
         
-        # 狀態列
-        self.status_var = StringVar(value="就緒")
+        # Status bar
+        self.status_var = StringVar(value="Ready")
         status_label = Label(
             main_frame,
             textvariable=self.status_var,
@@ -258,16 +317,16 @@ class MainWindow:
     
     def log(self, message: str, level: str = "INFO"):
         """
-        記錄日誌訊息
+        Log message
         
         Args:
-            message: 訊息內容
-            level: 日誌級別
+            message: Message content
+            level: Log level
         """
         self.log_queue.put(f"[{level}] {message}")
     
     def update_log_display(self):
-        """更新日誌顯示"""
+        """Update log display"""
         try:
             while not self.log_queue.empty():
                 message = self.log_queue.get_nowait()
@@ -281,49 +340,48 @@ class MainWindow:
         self.root.after(100, self.update_log_display)
     
     def select_files(self):
-        """選擇影片檔案"""
+        """Select video files"""
         files = filedialog.askopenfilenames(
-            title="選擇影片檔案",
+            title="Select Video Files",
             filetypes=[
-                ("影片檔案", "*.mp4 *.avi *.mov *.mkv *.flv *.wmv"),
-                ("所有檔案", "*.*")
+                ("Video Files", "*.mp4 *.avi *.mov *.mkv *.flv *.wmv"),
+                ("All Files", "*.*")
             ]
         )
         if files:
             self.input_files = list(files)
             self.file_count_label.config(
-                text=f"已選擇: {len(self.input_files)} 個檔案"
+                text=f"Selected: {len(self.input_files)} files"
             )
-            self.log(f"已選擇 {len(self.input_files)} 個檔案")
+            self.log(f"Selected {len(self.input_files)} files")
     
     def select_folder(self):
-        """選擇資料夾（批次處理）"""
-        folder = filedialog.askdirectory(title="選擇包含影片的資料夾")
+        """Select folder (batch processing)"""
+        folder = filedialog.askdirectory(title="Select Folder with Videos")
         if folder:
             video_files = get_video_files(folder)
             if video_files:
                 self.input_files = [str(f) for f in video_files]
                 self.file_count_label.config(
-                    text=f"已選擇: {len(self.input_files)} 個檔案"
+                    text=f"Selected: {len(self.input_files)} files"
                 )
-                self.log(f"從資料夾找到 {len(self.input_files)} 個影片檔案")
+                self.log(f"Found {len(self.input_files)} video files in folder")
             else:
-                messagebox.showwarning("警告", "該資料夾中沒有找到影片檔案")
+                messagebox.showwarning("Warning", "No video files found in the folder")
     
     def select_output_folder(self):
-        """選擇輸出資料夾"""
-        folder = filedialog.askdirectory(title="選擇輸出資料夾")
+        """Select output folder"""
+        folder = filedialog.askdirectory(title="Select Output Folder")
         if folder:
             self.output_folder.set(folder)
-            self.log(f"輸出資料夾: {folder}")
+            self.log(f"Output folder: {folder}")
     
     def load_config_to_ui(self):
-        """載入配置到 UI"""
-        # 配置已在 create_widgets 中載入
+        """Load config to UI"""
         pass
     
     def save_ui_to_config(self):
-        """儲存 UI 設定到配置"""
+        """Save UI settings to config"""
         try:
             self.config.set("width", int(self.width_var.get()))
             self.config.set("height", int(self.height_var.get()))
@@ -331,30 +389,33 @@ class MainWindow:
             self.config.set("encoder", self.encoder_var.get())
             self.config.set("threads", self.threads_var.get())
             self.config.set("delete_original", self.delete_original_var.get())
+            self.config.set("preset", self.preset_var.get())
+            self.config.set("use_crf", self.use_crf_var.get())
+            self.config.set("crf", self.crf_var.get())
             self.config.save_config()
         except ValueError as e:
-            self.log(f"配置錯誤: {e}", "ERROR")
+            self.log(f"Config error: {e}", "ERROR")
     
     def start_conversion(self):
-        """開始轉換"""
+        """Start conversion"""
         if not self.input_files:
-            messagebox.showwarning("警告", "請先選擇要轉換的檔案")
+            messagebox.showwarning("Warning", "Please select files to convert")
             return
         
         if not self.output_folder.get():
-            messagebox.showwarning("警告", "請先選擇輸出資料夾")
+            messagebox.showwarning("Warning", "Please select output folder")
             return
         
-        # 儲存設定
+        # Save settings
         self.save_ui_to_config()
         
-        # 更新 UI 狀態
+        # Update UI state
         self.is_converting = True
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
         self.stop_event.clear()
         
-        # 建立轉換器
+        # Create converter
         self.converter = VideoConverter(
             encoder=self.encoder_var.get(),
             width=int(self.width_var.get()),
@@ -362,78 +423,116 @@ class MainWindow:
             bitrate=self.bitrate_var.get(),
             threads=self.threads_var.get(),
             timeout=self.config.get("timeout", 300),
-            sequence_manager=self.sequence_manager
+            sequence_manager=self.sequence_manager,
+            preset=self.preset_var.get(),
+            use_crf=self.use_crf_var.get(),
+            crf=self.crf_var.get()
         )
         
-        # 啟動轉換執行緒
+        # Start conversion thread
         thread = threading.Thread(target=self.convert_thread)
         thread.daemon = True
         thread.start()
     
     def convert_thread(self):
-        """轉換執行緒"""
+        """Conversion thread"""
         try:
-            self.log("開始批次轉換...")
-            self.status_var.set("轉換中...")
+            self.log("Starting batch conversion...")
+            self.status_var.set("Converting...")
+            
+            current_file_info = {}
+            
+            def file_progress_callback(progress: dict):
+                """Single file progress callback"""
+                info = progress.get("video_info", {})
+                percent = progress.get("percent", 0)
+                current_time = progress.get("time", 0)
+                
+                # Format time
+                mins = int(current_time // 60)
+                secs = int(current_time % 60)
+                time_str = f"{mins:02d}:{secs:02d}"
+                
+                # Get source format
+                src_format = info.get("format", "unknown")
+                src_codec = info.get("codec", "")
+                src_res = f"{info.get('width', 0)}x{info.get('height', 0)}"
+                
+                # Calculate total progress
+                total_progress = ((current_file_info.get("idx", 0) + percent / 100) / current_file_info.get("total", 1)) * 100
+                
+                self.progress_bar["value"] = total_progress
+                self.progress_var.set(
+                    f"[{current_file_info.get('idx', 0)+1}/{current_file_info.get('total', 1)}] "
+                    f"{percent:.1f}% ({time_str}) - {src_format} {src_res}"
+                )
             
             def progress_callback(current: int, total: int, filename: str):
-                """進度回調"""
-                progress = int((current / total) * 100) if total > 0 else 0
-                self.progress_bar["value"] = progress
-                self.progress_var.set(
-                    f"處理中 ({current}/{total}): {Path(filename).name}"
-                )
-                self.log(f"[{current}/{total}] 處理: {Path(filename).name}")
+                """Batch progress callback"""
+                current_file_info["idx"] = current
+                current_file_info["total"] = total
+                filename_only = Path(filename).name
+                self.log(f"[{current+1}/{total}] Processing: {filename_only}")
             
-            # 執行批次轉換
+            # Run batch conversion
             result = self.converter.convert_batch(
                 self.input_files,
                 self.output_folder.get(),
                 delete_original=self.delete_original_var.get(),
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                file_progress_callback=file_progress_callback
             )
             
-            # 顯示結果
+            # Show results
             self.progress_bar["value"] = 100
-            self.progress_var.set("轉換完成")
+            self.progress_var.set("Conversion Complete")
             self.status_var.set(
-                f"完成: 成功 {result['success']}/{result['total']}, "
-                f"失敗 {result['failed']}"
+                f"Complete: Success {result['success']}/{result['total']}, "
+                f"Failed {result['failed']}"
             )
             
-            self.log(f"轉換完成: 成功 {result['success']}, 失敗 {result['failed']}")
+            self.log(f"Conversion complete: Success {result['success']}, Failed {result['failed']}")
             
             if result['failed'] > 0:
-                self.log("失敗的檔案:", "WARNING")
+                self.log("Failed files:", "WARNING")
                 for item in result['failed_files']:
                     if isinstance(item, tuple):
                         self.log(f"  - {item[0]}: {item[1]}", "ERROR")
                     else:
                         self.log(f"  - {item}", "ERROR")
+                
+                # Show error details
+                last_error = self.converter.get_last_error()
+                if last_error:
+                    self.log("--- Error Details ---", "ERROR")
+                    error_lines = last_error.split('\n')
+                    for line in error_lines:
+                        if 'error' in line.lower() or 'failed' in line.lower() or 'nvenc' in line.lower() or 'driver' in line.lower():
+                            self.log(f"  {line}", "ERROR")
             
             messagebox.showinfo(
-                "轉換完成",
-                f"轉換完成！\n成功: {result['success']}\n失敗: {result['failed']}"
+                "Conversion Complete",
+                f"Conversion complete!\nSuccess: {result['success']}\nFailed: {result['failed']}"
             )
             
         except Exception as e:
-            self.log(f"轉換錯誤: {e}", "ERROR")
-            messagebox.showerror("錯誤", f"轉換過程中發生錯誤: {e}")
+            self.log(f"Conversion error: {e}", "ERROR")
+            messagebox.showerror("Error", f"Error during conversion: {e}")
         finally:
-            # 重置 UI 狀態
+            # Reset UI state
             self.is_converting = False
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
             self.progress_bar["value"] = 0
     
     def stop_conversion(self):
-        """停止轉換"""
+        """Stop conversion"""
         if self.converter:
             self.converter.stop()
             self.stop_event.set()
-            self.log("正在停止轉換...", "WARNING")
-            self.status_var.set("正在停止...")
+            self.log("Stopping conversion...", "WARNING")
+            self.status_var.set("Stopping...")
     
     def run(self):
-        """執行主迴圈"""
+        """Run main loop"""
         self.root.mainloop()
