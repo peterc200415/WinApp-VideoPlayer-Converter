@@ -304,7 +304,32 @@ class VideoConverter:
         
         # 取得影片資訊
         video_info = self.get_video_info(str(input_path))
+        src_width = video_info.get("width", 0)
+        src_height = video_info.get("height", 0)
         duration = video_info.get("duration", 0)
+        
+        # 如果解析度相同，直接複製檔案（不解碼）
+        if src_width == self.width and src_height == self.height and self.width > 0 and self.height > 0:
+            self._last_error = None
+            try:
+                import shutil
+                shutil.copy2(str(input_path), str(output_path))
+                self._last_error = "SKIPPED_SAME_RESOLUTION"
+
+                progress = {
+                    "percent": 100.0,
+                    "time": float(duration) if duration else 0.0,
+                    "video_info": video_info,
+                    "raw_line": ""
+                }
+                if hasattr(self, "_file_progress_callback") and self._file_progress_callback:
+                    self._file_progress_callback(progress)
+                if progress_callback:
+                    progress_callback(progress)
+                return True
+            except Exception as e:
+                self._last_error = f"Copy failed: {e}"
+                return False
         
         # 取得編碼器
         encoder = self._get_encoder()
@@ -343,14 +368,18 @@ class VideoConverter:
                     break
                 
                 stderr_output.append(line)
-                
-                if line and progress_callback:
+
+                should_report = bool(progress_callback) or (
+                    hasattr(self, "_file_progress_callback") and bool(self._file_progress_callback)
+                )
+                if line and should_report:
                     progress = self._parse_progress(line, duration)
                     if progress:
                         progress["video_info"] = video_info
-                        if hasattr(self, '_file_progress_callback') and self._file_progress_callback:
+                        if hasattr(self, "_file_progress_callback") and self._file_progress_callback:
                             self._file_progress_callback(progress)
-                        progress_callback(progress)
+                        if progress_callback:
+                            progress_callback(progress)
             
             # 等待程序完成
             stdout, stderr = process.communicate(timeout=self.timeout)
@@ -435,12 +464,15 @@ class VideoConverter:
             try:
                 # 取得影片資訊（用於檔名）
                 video_info = self.get_video_info(str(input_file))
-                height = video_info.get("height", 0)
+                src_height = video_info.get("height", 0)
+                
+                # 使用輸出設定的高度作為檔名
+                out_height = self.height
                 
                 # 生成輸出檔名
                 seq = self.sequence_manager.get_next()
-                if height > 0:
-                    output_filename = f"av-{height}p-{seq:04d}.mp4"
+                if out_height > 0:
+                    output_filename = f"av-{out_height}p-{seq:04d}.mp4"
                 else:
                     output_filename = f"av-{seq:04d}.mp4"
                 output_path = output_folder / output_filename

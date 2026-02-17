@@ -1,6 +1,6 @@
 """
 Main Window Module
-Modern GUI for video conversion
+Professional GUI for video conversion
 """
 import os
 import queue
@@ -22,6 +22,21 @@ from ..utils.file_utils import format_file_size, get_video_files
 class MainWindow:
     """Main Window Class"""
     
+    # Color scheme - Professional dark theme
+    COLORS = {
+        "bg_primary": "#1e1e2e",
+        "bg_secondary": "#2d2d3f",
+        "bg_tertiary": "#383850",
+        "accent": "#7c3aed",
+        "accent_hover": "#8b5cf6",
+        "success": "#10b981",
+        "danger": "#ef4444",
+        "warning": "#f59e0b",
+        "text_primary": "#f1f5f9",
+        "text_secondary": "#94a3b8",
+        "border": "#4b5563",
+    }
+    
     def __init__(self, root: Tk):
         """
         Initialize Main Window
@@ -30,8 +45,12 @@ class MainWindow:
             root: Tkinter root window
         """
         self.root = root
-        self.root.title("Video Converter")
-        self.root.geometry("900x700")
+        self.root.title("Video Converter Pro")
+        self.root.geometry("950x750")
+        self.root.minsize(800, 600)
+        
+        # Apply dark theme
+        self.root.configure(bg=self.COLORS["bg_primary"])
         
         # Initialize components
         self.config = Config()
@@ -47,77 +66,293 @@ class MainWindow:
         self.is_converting = False
         self.stop_event = threading.Event()
         self.log_queue = queue.Queue()
+        self.progress_queue = queue.Queue()
+
+        self._batch_idx = 0
+        self._batch_total = 0
+        self._batch_filename = ""
+        
+        # Apply custom styles
+        self.setup_styles()
         
         # Build UI
         self.create_widgets()
         self.update_log_display()
+        self.update_progress_display()
         
         # Load config
         self.load_config_to_ui()
     
+    def setup_styles(self):
+        """Setup custom ttk styles"""
+        style = ttk.Style()
+        style.theme_use("clam")
+        
+        # Configure main frame
+        style.configure(".", 
+            background=self.COLORS["bg_primary"],
+            foreground=self.COLORS["text_primary"],
+            font=("Segoe UI", 10)
+        )
+        
+        # Configure LabelFrame
+        style.configure("TLabelframe",
+            background=self.COLORS["bg_secondary"],
+            foreground=self.COLORS["text_primary"],
+            bordercolor=self.COLORS["border"],
+            lightcolor=self.COLORS["bg_secondary"],
+            darkcolor=self.COLORS["bg_secondary"]
+        )
+        style.configure("TLabelframe.Label",
+            background=self.COLORS["bg_secondary"],
+            foreground=self.COLORS["accent"],
+            font=("Segoe UI", 11, "bold")
+        )
+        
+        # Configure Combobox
+        style.configure("TCombobox",
+            background=self.COLORS["bg_tertiary"],
+            foreground=self.COLORS["text_primary"],
+            fieldbackground=self.COLORS["bg_tertiary"],
+            bordercolor=self.COLORS["border"],
+            lightcolor=self.COLORS["bg_tertiary"],
+            darkcolor=self.COLORS["bg_tertiary"],
+        )
+        # Configure Progressbar
+        style.configure("Horizontal.TProgressbar",
+            background=self.COLORS["accent"],
+            troughcolor=self.COLORS["bg_tertiary"],
+            bordercolor=self.COLORS["border"],
+            lightcolor=self.COLORS["accent"],
+            darkcolor=self.COLORS["accent"]
+        )
+        
+        # Configure Checkbutton
+        style.configure("TCheckbutton",
+            background=self.COLORS["bg_secondary"],
+            foreground=self.COLORS["text_primary"]
+        )
+        
     def create_widgets(self):
         """Create UI widgets"""
-        # Main frame
-        main_frame = Frame(self.root, padx=10, pady=10)
+        # Main frame with padding
+        main_frame = Frame(self.root, bg=self.COLORS["bg_primary"], padx=15, pady=15)
         main_frame.pack(fill="both", expand=True)
         
+        # ==================== HEADER ====================
+        header_frame = Frame(main_frame, bg=self.COLORS["bg_primary"])
+        header_frame.pack(fill="x", pady=(0, 15))
+        
+        # Logo/Icon area
+        icon_label = Label(
+            header_frame,
+            text="🎬",
+            font=("Segoe UI", 32),
+            bg=self.COLORS["bg_primary"],
+            fg=self.COLORS["accent"]
+        )
+        icon_label.pack(side="left", padx=(0, 10))
+        
         # Title
-        title_label = Label(
+        title_frame = Frame(header_frame, bg=self.COLORS["bg_primary"])
+        title_frame.pack(side="left")
+        
+        Label(
+            title_frame,
+            text="Video Converter Pro",
+            font=("Segoe UI", 20, "bold"),
+            bg=self.COLORS["bg_primary"],
+            fg=self.COLORS["text_primary"]
+        ).pack(anchor="w")
+        
+        Label(
+            title_frame,
+            text="Professional Video Batch Converter",
+            font=("Segoe UI", 10),
+            bg=self.COLORS["bg_primary"],
+            fg=self.COLORS["text_secondary"]
+        ).pack(anchor="w")
+        
+        # ==================== FILE SELECTION ====================
+        file_frame = self.create_section_frame(main_frame, "📁 Input Files")
+        
+        # File selection buttons
+        btn_frame = Frame(file_frame, bg=self.COLORS["bg_secondary"])
+        btn_frame.pack(fill="x", pady=(0, 10))
+        
+        self.create_modern_button(
+            btn_frame, "Select Files", self.select_files,
+            icon="📄"
+        ).pack(side="left", padx=(0, 10))
+        
+        self.create_modern_button(
+            btn_frame, "Select Folder", self.select_folder,
+            icon="📂"
+        ).pack(side="left", padx=(0, 10))
+        
+        # File info display
+        self.file_count_label = self.create_info_label(
+            file_frame, "No files selected"
+        )
+        
+        # ==================== OUTPUT SETTINGS ====================
+        output_frame = self.create_section_frame(main_frame, "💾 Output Settings")
+        
+        output_btn_frame = Frame(output_frame, bg=self.COLORS["bg_secondary"])
+        output_btn_frame.pack(fill="x", pady=(0, 10))
+        
+        self.create_modern_button(
+            output_btn_frame, "Choose Output Folder", self.select_output_folder,
+            icon="📂"
+        ).pack(side="left")
+        
+        self.output_label = self.create_info_label(output_frame, "No folder selected")
+        
+        # ==================== CONVERSION SETTINGS ====================
+        settings_frame = self.create_section_frame(main_frame, "⚙️ Conversion Settings")
+        
+        # Settings - use simple pack layout
+        self.build_settings_section(settings_frame)
+        
+        # ==================== CONTROL BUTTONS ====================
+        control_frame = Frame(main_frame, bg=self.COLORS["bg_primary"])
+        control_frame.pack(fill="x", pady=15)
+        
+        self.start_button = self.create_primary_button(
+            control_frame, "▶ Start Conversion", self.start_conversion
+        )
+        self.start_button.pack(side="left", padx=(0, 10))
+        
+        self.stop_button = self.create_danger_button(
+            control_frame, "■ Stop", self.stop_conversion
+        )
+        self.stop_button.pack(side="left")
+        
+        # ==================== PROGRESS SECTION ====================
+        self.create_progress_section(main_frame)
+        
+        # ==================== LOG SECTION ====================
+        self.create_log_section(main_frame)
+        
+        # ==================== STATUS BAR ====================
+        self.status_var = StringVar(value="Ready")
+        self.status_label = Label(
             main_frame,
-            text="Video Converter",
-            font=("Arial", 16, "bold")
+            textvariable=self.status_var,
+            bg=self.COLORS["bg_tertiary"],
+            fg=self.COLORS["text_secondary"],
+            font=("Segoe UI", 9),
+            anchor="w",
+            padx=10,
+            pady=5,
+            relief="flat"
         )
-        title_label.pack(pady=(0, 10))
+        self.status_label.pack(fill="x", pady=(10, 0))
+    
+    def create_section_frame(self, parent, title):
+        """Create a section frame with title"""
+        frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=15, pady=10)
+        frame.pack(fill="x", pady=(0, 10))
         
-        # File selection area
-        file_frame = ttk.LabelFrame(main_frame, text="File Selection", padding=10)
-        file_frame.pack(fill="x", pady=5)
+        Label(
+            frame,
+            text=title,
+            font=("Segoe UI", 11, "bold"),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["accent"],
+            anchor="w"
+        ).pack(fill="x", pady=(0, 10))
         
-        Button(
-            file_frame,
-            text="Select Files",
-            command=self.select_files
-        ).pack(side="left", padx=5)
-        
-        Button(
-            file_frame,
-            text="Select Folder",
-            command=self.select_folder
-        ).pack(side="left", padx=5)
-        
-        self.file_count_label = Label(
-            file_frame,
-            text="Selected: 0 files",
-            fg="gray"
+        inner = Frame(frame, bg=self.COLORS["bg_secondary"])
+        inner.pack(fill="x")
+        return inner
+    
+    def create_modern_button(self, parent, text, command, icon=""):
+        """Create a modern styled button"""
+        btn = Button(
+            parent,
+            text=f"{icon} {text}" if icon else text,
+            command=command,
+            font=("Segoe UI", 10),
+            bg=self.COLORS["bg_tertiary"],
+            fg=self.COLORS["text_primary"],
+            activebackground=self.COLORS["accent"],
+            activeforeground="white",
+            relief="flat",
+            padx=15,
+            pady=8,
+            cursor="hand2"
         )
-        self.file_count_label.pack(side="left", padx=10)
-        
-        # Output folder selection
-        output_frame = ttk.LabelFrame(main_frame, text="Output Settings", padding=10)
-        output_frame.pack(fill="x", pady=5)
-        
-        Button(
-            output_frame,
-            text="Select Output Folder",
-            command=self.select_output_folder
-        ).pack(side="left", padx=5)
-        
-        self.output_label = Label(
-            output_frame,
-            textvariable=self.output_folder,
-            fg="gray"
+        return btn
+    
+    def create_primary_button(self, parent, text, command):
+        """Create primary action button"""
+        btn = Button(
+            parent,
+            text=text,
+            command=command,
+            font=("Segoe UI", 11, "bold"),
+            bg=self.COLORS["accent"],
+            fg="white",
+            activebackground=self.COLORS["accent_hover"],
+            activeforeground="white",
+            relief="flat",
+            padx=25,
+            pady=10,
+            cursor="hand2"
         )
-        self.output_label.pack(side="left", padx=10)
+        return btn
+    
+    def create_danger_button(self, parent, text, command):
+        """Create danger/stop button"""
+        btn = Button(
+            parent,
+            text=text,
+            command=command,
+            font=("Segoe UI", 11, "bold"),
+            bg=self.COLORS["danger"],
+            fg="white",
+            activebackground="#dc2626",
+            activeforeground="white",
+            relief="flat",
+            padx=25,
+            pady=10,
+            cursor="hand2",
+            state="disabled"
+        )
+        return btn
+    
+    def create_info_label(self, parent, text):
+        """Create an info display label"""
+        label = Label(
+            parent,
+            text=text,
+            font=("Segoe UI", 10),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_secondary"],
+            anchor="w",
+            padx=5
+        )
+        label.pack(fill="x", pady=5)
+        return label
+    
+    def create_setting_row(self, parent, label_text, row, widget_frame):
+        """Create a settings row with label and widget"""
+        Label(
+            parent,
+            text=label_text,
+            font=("Segoe UI", 10),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_secondary"],
+            width=15,
+            anchor="w"
+        ).grid(row=row, column=0, padx=5, pady=8, sticky="w")
         
-        # Conversion settings area
-        settings_frame = ttk.LabelFrame(main_frame, text="Conversion Settings", padding=10)
-        settings_frame.pack(fill="x", pady=5)
-        
-        # Resolution setting
-        res_frame = Frame(settings_frame)
-        res_frame.pack(fill="x", pady=2)
-        
-        Label(res_frame, text="Resolution:").pack(side="left", padx=5)
+        widget_frame.grid(row=row, column=1, columnspan=2, sticky="w", padx=5, pady=5)
+    
+    def create_resolution_selector(self):
+        """Create resolution selector"""
+        frame = Frame(bg=self.COLORS["bg_secondary"])
         
         RESOLUTION_PRESETS = {
             "Original": (0, 0),
@@ -139,190 +374,263 @@ class MainWindow:
                     self.height_var.set(str(h))
         
         self.resolution_var.trace("w", on_resolution_change)
-        res_combo = ttk.Combobox(
-            res_frame,
+        
+        ttk.Combobox(
+            frame,
             textvariable=self.resolution_var,
             values=list(RESOLUTION_PRESETS.keys()),
             state="readonly",
             width=20
-        )
-        res_combo.pack(side="left", padx=5)
+        ).pack(side="left", padx=(0, 10))
         
-        Label(res_frame, text="W:").pack(side="left", padx=10)
+        Label(frame, text="W:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
         self.width_var = StringVar(value=str(self.config.get("width", 1280)))
-        width_entry = ttk.Entry(res_frame, textvariable=self.width_var, width=8)
-        width_entry.pack(side="left", padx=5)
+        ttk.Entry(frame, textvariable=self.width_var, width=8).pack(side="left", padx=5)
         
-        Label(res_frame, text="H:").pack(side="left", padx=5)
+        Label(frame, text="H:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
         self.height_var = StringVar(value=str(self.config.get("height", 720)))
-        height_entry = ttk.Entry(res_frame, textvariable=self.height_var, width=8)
-        height_entry.pack(side="left", padx=5)
+        ttk.Entry(frame, textvariable=self.height_var, width=8).pack(side="left", padx=5)
         
-        # Bitrate setting
-        bitrate_frame = Frame(settings_frame)
-        bitrate_frame.pack(fill="x", pady=2)
+        return frame
+    
+    def create_encoder_selector(self):
+        """Create encoder selector"""
+        frame = Frame(bg=self.COLORS["bg_secondary"])
         
-        Label(bitrate_frame, text="Bitrate:").pack(side="left", padx=5)
-        self.bitrate_var = StringVar(value=self.config.get("bitrate", "1000k"))
-        bitrate_entry = ttk.Entry(bitrate_frame, textvariable=self.bitrate_var, width=10)
-        bitrate_entry.pack(side="left", padx=5)
-        
-        # CRF mode
-        self.use_crf_var = BooleanVar(value=self.config.get("use_crf", False))
-        ttk.Checkbutton(
-            bitrate_frame,
-            text="Use CRF Quality Mode",
-            variable=self.use_crf_var
-        ).pack(side="left", padx=10)
-        
-        Label(bitrate_frame, text="CRF:").pack(side="left", padx=5)
-        self.crf_var = IntVar(value=self.config.get("crf", 23))
-        crf_spin = ttk.Spinbox(bitrate_frame, from_=0, to=51, width=5, textvariable=self.crf_var)
-        crf_spin.pack(side="left", padx=5)
-        
-        # Encoder selection
-        encoder_frame = Frame(settings_frame)
-        encoder_frame.pack(fill="x", pady=2)
-        
-        Label(encoder_frame, text="Encoder:").pack(side="left", padx=5)
         self.encoder_var = StringVar(value=self.config.get("encoder", "auto"))
-        encoder_combo = ttk.Combobox(
-            encoder_frame,
+        ttk.Combobox(
+            frame,
             textvariable=self.encoder_var,
             values=["auto"] + self.encoder_detector.detect_available_encoders(),
             state="readonly",
-            width=15
-        )
-        encoder_combo.pack(side="left", padx=5)
+            width=20
+        ).pack(side="left")
         
-        # Preset selection
-        preset_frame = Frame(settings_frame)
-        preset_frame.pack(fill="x", pady=2)
+        return frame
+    
+    def create_quality_row(self):
+        """Create quality settings row (bitrate + CRF)"""
+        frame = Frame(bg=self.COLORS["bg_secondary"])
         
-        Label(preset_frame, text="Preset:").pack(side="left", padx=5)
+        Label(frame, text="Bitrate:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.bitrate_var = StringVar(value=self.config.get("bitrate", "1000k"))
+        ttk.Entry(frame, textvariable=self.bitrate_var, width=10).pack(side="left", padx=5)
+        
+        self.use_crf_var = BooleanVar(value=self.config.get("use_crf", False))
+        ttk.Checkbutton(
+            frame,
+            text="Use CRF",
+            variable=self.use_crf_var
+        ).pack(side="left", padx=(15, 5))
+        
+        Label(frame, text="CRF:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.crf_var = IntVar(value=self.config.get("crf", 23))
+        ttk.Spinbox(frame, from_=0, to=51, width=5, textvariable=self.crf_var).pack(side="left", padx=5)
+        
+        return frame
+    
+    def create_performance_row(self):
+        """Create performance settings row (preset + threads)"""
+        frame = Frame(bg=self.COLORS["bg_secondary"])
+        
+        Label(frame, text="Preset:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
         self.preset_var = StringVar(value=self.config.get("preset", "medium"))
-        preset_combo = ttk.Combobox(
-            preset_frame,
+        ttk.Combobox(
+            frame,
             textvariable=self.preset_var,
             values=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"],
             state="readonly",
             width=10
-        )
-        preset_combo.pack(side="left", padx=5)
-        
-        # Threads
-        threads_frame = Frame(settings_frame)
-        threads_frame.pack(fill="x", pady=2)
-        
-        Label(threads_frame, text="Threads:").pack(side="left", padx=5)
-        self.threads_var = IntVar(value=self.config.get("threads", 1))
-        threads_combo = ttk.Combobox(
-            threads_frame,
-            textvariable=self.threads_var,
-            values=[1, 2, 4, 8],
-            state="readonly",
-            width=10
-        )
-        threads_combo.pack(side="left", padx=5)
-        
-        # Options
-        options_frame = Frame(settings_frame)
-        options_frame.pack(fill="x", pady=2)
-        
-        self.delete_original_var = BooleanVar(
-            value=self.config.get("delete_original", True)
-        )
-        ttk.Checkbutton(
-            options_frame,
-            text="Delete original files after conversion",
-            variable=self.delete_original_var
         ).pack(side="left", padx=5)
         
-        # Control buttons
-        control_frame = Frame(main_frame)
-        control_frame.pack(fill="x", pady=10)
+        Label(frame, text="Threads:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left", padx=(20, 5))
+        self.threads_var = StringVar(value=str(self.config.get("threads", 1)))
+        ttk.Combobox(
+            frame,
+            textvariable=self.threads_var,
+            values=["1", "2", "4", "8"],
+            state="readonly",
+            width=5
+        ).pack(side="left", padx=5)
         
-        self.start_button = Button(
-            control_frame,
-            text="Start Conversion",
-            command=self.start_conversion,
-            bg="#4CAF50",
-            fg="white",
-            font=("Arial", 10, "bold"),
-            padx=20,
-            pady=5
-        )
-        self.start_button.pack(side="left", padx=5)
+        return frame
+    
+    def create_options_row(self, parent, row):
+        """Create options row"""
+        frame = Frame(parent, bg=self.COLORS["bg_secondary"])
+        frame.grid(row=row, column=0, columnspan=3, sticky="w", padx=5, pady=5)
         
-        self.stop_button = Button(
-            control_frame,
-            text="Stop",
-            command=self.stop_conversion,
-            bg="#f44336",
-            fg="white",
-            font=("Arial", 10, "bold"),
-            padx=20,
-            pady=5,
-            state="disabled"
-        )
-        self.stop_button.pack(side="left", padx=5)
+        self.delete_original_var = BooleanVar(value=self.config.get("delete_original", True))
+        ttk.Checkbutton(
+            frame,
+            text="Delete original files after successful conversion",
+            variable=self.delete_original_var
+        ).pack(side="left")
+    
+    def build_settings_section(self, parent):
+        """Build settings section with pack layout"""
+        # Resolution
+        row = Frame(parent, bg=self.COLORS["bg_secondary"])
+        row.pack(fill="x", pady=3)
+        Label(row, text="Resolution:", width=12, anchor="w", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left", padx=5)
+        self.resolution_var = StringVar(value="720p (1280x720)")
         
-        # Progress
-        self.progress_var = StringVar(value="Ready")
-        self.progress_label = Label(
-            control_frame,
-            textvariable=self.progress_var,
-            font=("Arial", 9)
-        )
-        self.progress_label.pack(side="left", padx=10)
+        RESOLUTION_PRESETS = {
+            "Original": (0, 0), "4K (3840x2160)": (3840, 2160),
+            "1080p (1920x1080)": (1920, 1080), "720p (1280x720)": (1280, 720),
+            "480p (854x480)": (854, 480), "360p (640x360)": (640, 360),
+        }
         
-        # Progress bar
-        self.progress_bar = ttk.Progressbar(
-            main_frame,
+        def on_res_change(*args):
+            sel = self.resolution_var.get()
+            if sel in RESOLUTION_PRESETS:
+                w, h = RESOLUTION_PRESETS[sel]
+                if w > 0:
+                    self.width_var.set(str(w))
+                    self.height_var.set(str(h))
+        
+        self.resolution_var.trace("w", on_res_change)
+        ttk.Combobox(row, textvariable=self.resolution_var, values=list(RESOLUTION_PRESETS.keys()), state="readonly", width=18).pack(side="left", padx=5)
+        
+        Label(row, text="W:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.width_var = StringVar(value=str(self.config.get("width", 1280)))
+        ttk.Entry(row, textvariable=self.width_var, width=6).pack(side="left", padx=3)
+        Label(row, text="H:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.height_var = StringVar(value=str(self.config.get("height", 720)))
+        ttk.Entry(row, textvariable=self.height_var, width=6).pack(side="left", padx=3)
+        
+        # Encoder
+        row = Frame(parent, bg=self.COLORS["bg_secondary"])
+        row.pack(fill="x", pady=3)
+        Label(row, text="Encoder:", width=12, anchor="w", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left", padx=5)
+        self.encoder_var = StringVar(value=self.config.get("encoder", "auto"))
+        ttk.Combobox(row, textvariable=self.encoder_var, values=["auto"] + self.encoder_detector.detect_available_encoders(), state="readonly", width=20).pack(side="left", padx=5)
+        
+        # Quality
+        row = Frame(parent, bg=self.COLORS["bg_secondary"])
+        row.pack(fill="x", pady=3)
+        Label(row, text="Quality:", width=12, anchor="w", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left", padx=5)
+        Label(row, text="Bitrate:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.bitrate_var = StringVar(value=self.config.get("bitrate", "1000k"))
+        ttk.Entry(row, textvariable=self.bitrate_var, width=8).pack(side="left", padx=3)
+        self.use_crf_var = BooleanVar(value=self.config.get("use_crf", False))
+        ttk.Checkbutton(row, text="CRF", variable=self.use_crf_var).pack(side="left", padx=10)
+        Label(row, text="Value:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.crf_var = IntVar(value=self.config.get("crf", 23))
+        ttk.Spinbox(row, from_=0, to=51, width=4, textvariable=self.crf_var).pack(side="left", padx=3)
+        
+        # Performance
+        row = Frame(parent, bg=self.COLORS["bg_secondary"])
+        row.pack(fill="x", pady=3)
+        Label(row, text="Performance:", width=12, anchor="w", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left", padx=5)
+        Label(row, text="Preset:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left")
+        self.preset_var = StringVar(value=self.config.get("preset", "medium"))
+        ttk.Combobox(row, textvariable=self.preset_var, values=["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"], state="readonly", width=10).pack(side="left", padx=3)
+        Label(row, text="Threads:", bg=self.COLORS["bg_secondary"], fg=self.COLORS["text_secondary"]).pack(side="left", padx=(15, 3))
+        self.threads_var = StringVar(value=str(self.config.get("threads", 1)))
+        ttk.Combobox(row, textvariable=self.threads_var, values=["1", "2", "4", "8"], state="readonly", width=4).pack(side="left")
+        
+        # Options
+        row = Frame(parent, bg=self.COLORS["bg_secondary"])
+        row.pack(fill="x", pady=3)
+        self.delete_original_var = BooleanVar(value=self.config.get("delete_original", True))
+        ttk.Checkbutton(row, text="Delete original files after successful conversion", variable=self.delete_original_var).pack(side="left", padx=5)
+        
+    def create_progress_section(self, parent):
+        """Create progress display section"""
+        progress_frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=15, pady=10)
+        progress_frame.pack(fill="x", pady=(0, 10))
+        
+        # Overall progress
+        Label(
+            progress_frame,
+            text="📊 Overall Progress",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["accent"],
+            anchor="w"
+        ).pack(fill="x", pady=(0, 5))
+        
+        self.overall_progress_var = StringVar(value="Overall: 0/0  0.0%")
+        Label(
+            progress_frame,
+            textvariable=self.overall_progress_var,
+            font=("Segoe UI", 9),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_secondary"]
+        ).pack(anchor="w", pady=(0, 3))
+        
+        self.overall_progress_bar = ttk.Progressbar(
+            progress_frame,
             mode="determinate",
-            maximum=100
+            maximum=100,
+            length=100
         )
-        self.progress_bar.pack(fill="x", pady=5)
+        self.overall_progress_bar.pack(fill="x", pady=(0, 10))
         
-        # Log display area
-        log_frame = ttk.LabelFrame(main_frame, text="Log", padding=5)
-        log_frame.pack(fill="both", expand=True, pady=5)
+        # File progress
+        Label(
+            progress_frame,
+            text="📄 Current File",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["accent"],
+            anchor="w"
+        ).pack(fill="x", pady=(0, 5))
         
-        # Log text area
-        log_text_frame = Frame(log_frame)
+        self.file_progress_var = StringVar(value="File: 0.0%")
+        Label(
+            progress_frame,
+            textvariable=self.file_progress_var,
+            font=("Segoe UI", 9),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_secondary"]
+        ).pack(anchor="w", pady=(0, 3))
+        
+        self.file_progress_bar = ttk.Progressbar(
+            progress_frame,
+            mode="determinate",
+            maximum=100,
+            length=100
+        )
+        self.file_progress_bar.pack(fill="x")
+    
+    def create_log_section(self, parent):
+        """Create log display section"""
+        log_frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=15, pady=10)
+        log_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        Label(
+            log_frame,
+            text="📋 Log",
+            font=("Segoe UI", 10, "bold"),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["accent"],
+            anchor="w"
+        ).pack(fill="x", pady=(0, 5))
+        
+        log_text_frame = Frame(log_frame, bg=self.COLORS["bg_secondary"])
         log_text_frame.pack(fill="both", expand=True)
         
         self.log_text = Text(
             log_text_frame,
             wrap="word",
             state="disabled",
-            font=("Consolas", 9)
+            font=("Consolas", 9),
+            bg=self.COLORS["bg_primary"],
+            fg=self.COLORS["text_primary"],
+            relief="flat",
+            padx=10,
+            pady=10
         )
         self.log_text.pack(side="left", fill="both", expand=True)
         
         log_scrollbar = Scrollbar(log_text_frame, command=self.log_text.yview)
         log_scrollbar.pack(side="right", fill="y")
         self.log_text.config(yscrollcommand=log_scrollbar.set)
-        
-        # Status bar
-        self.status_var = StringVar(value="Ready")
-        status_label = Label(
-            main_frame,
-            textvariable=self.status_var,
-            relief="sunken",
-            anchor="w",
-            padx=5
-        )
-        status_label.pack(fill="x", pady=(5, 0))
     
     def log(self, message: str, level: str = "INFO"):
-        """
-        Log message
-        
-        Args:
-            message: Message content
-            level: Log level
-        """
+        """Log message"""
         self.log_queue.put(f"[{level}] {message}")
     
     def update_log_display(self):
@@ -339,6 +647,18 @@ class MainWindow:
         
         self.root.after(100, self.update_log_display)
     
+    def get_video_info_summary(self, file_path: str) -> str:
+        """Get video info summary for display"""
+        from ..core.converter import VideoConverter
+        try:
+            vc = VideoConverter()
+            info = vc.get_video_info(file_path)
+            if info.get('width', 0) > 0:
+                return f"{info['width']}x{info['height']} {info.get('codec', '?')} {info.get('format', '?')}"
+        except Exception:
+            pass
+        return ""
+    
     def select_files(self):
         """Select video files"""
         files = filedialog.askopenfilenames(
@@ -350,9 +670,19 @@ class MainWindow:
         )
         if files:
             self.input_files = list(files)
-            self.file_count_label.config(
-                text=f"Selected: {len(self.input_files)} files"
-            )
+            
+            video_info = ""
+            if files:
+                video_info = self.get_video_info_summary(files[0])
+            
+            if video_info:
+                self.file_count_label.config(
+                    text=f"✓ {len(self.input_files)} files selected | {video_info}"
+                )
+            else:
+                self.file_count_label.config(
+                    text=f"✓ {len(self.input_files)} files selected"
+                )
             self.log(f"Selected {len(self.input_files)} files")
     
     def select_folder(self):
@@ -362,9 +692,19 @@ class MainWindow:
             video_files = get_video_files(folder)
             if video_files:
                 self.input_files = [str(f) for f in video_files]
-                self.file_count_label.config(
-                    text=f"Selected: {len(self.input_files)} files"
-                )
+                
+                video_info = ""
+                if video_files:
+                    video_info = self.get_video_info_summary(str(video_files[0]))
+                
+                if video_info:
+                    self.file_count_label.config(
+                        text=f"✓ {len(self.input_files)} files in folder | {video_info}"
+                    )
+                else:
+                    self.file_count_label.config(
+                        text=f"✓ {len(self.input_files)} files in folder"
+                    )
                 self.log(f"Found {len(self.input_files)} video files in folder")
             else:
                 messagebox.showwarning("Warning", "No video files found in the folder")
@@ -374,6 +714,7 @@ class MainWindow:
         folder = filedialog.askdirectory(title="Select Output Folder")
         if folder:
             self.output_folder.set(folder)
+            self.output_label.config(text=f"✓ {folder}")
             self.log(f"Output folder: {folder}")
     
     def load_config_to_ui(self):
@@ -387,7 +728,7 @@ class MainWindow:
             self.config.set("height", int(self.height_var.get()))
             self.config.set("bitrate", self.bitrate_var.get())
             self.config.set("encoder", self.encoder_var.get())
-            self.config.set("threads", self.threads_var.get())
+            self.config.set("threads", int(self.threads_var.get()))
             self.config.set("delete_original", self.delete_original_var.get())
             self.config.set("preset", self.preset_var.get())
             self.config.set("use_crf", self.use_crf_var.get())
@@ -406,22 +747,19 @@ class MainWindow:
             messagebox.showwarning("Warning", "Please select output folder")
             return
         
-        # Save settings
         self.save_ui_to_config()
         
-        # Update UI state
         self.is_converting = True
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
         self.stop_event.clear()
         
-        # Create converter
         self.converter = VideoConverter(
             encoder=self.encoder_var.get(),
             width=int(self.width_var.get()),
             height=int(self.height_var.get()),
             bitrate=self.bitrate_var.get(),
-            threads=self.threads_var.get(),
+            threads=int(self.threads_var.get()),
             timeout=self.config.get("timeout", 300),
             sequence_manager=self.sequence_manager,
             preset=self.preset_var.get(),
@@ -429,7 +767,6 @@ class MainWindow:
             crf=self.crf_var.get()
         )
         
-        # Start conversion thread
         thread = threading.Thread(target=self.convert_thread)
         thread.daemon = True
         thread.start()
@@ -440,41 +777,20 @@ class MainWindow:
             self.log("Starting batch conversion...")
             self.status_var.set("Converting...")
             
-            current_file_info = {}
+            self.progress_queue.put({"type": "start", "total": len(self.input_files)})
             
             def file_progress_callback(progress: dict):
-                """Single file progress callback"""
-                info = progress.get("video_info", {})
-                percent = progress.get("percent", 0)
-                current_time = progress.get("time", 0)
-                
-                # Format time
-                mins = int(current_time // 60)
-                secs = int(current_time % 60)
-                time_str = f"{mins:02d}:{secs:02d}"
-                
-                # Get source format
-                src_format = info.get("format", "unknown")
-                src_codec = info.get("codec", "")
-                src_res = f"{info.get('width', 0)}x{info.get('height', 0)}"
-                
-                # Calculate total progress
-                total_progress = ((current_file_info.get("idx", 0) + percent / 100) / current_file_info.get("total", 1)) * 100
-                
-                self.progress_bar["value"] = total_progress
-                self.progress_var.set(
-                    f"[{current_file_info.get('idx', 0)+1}/{current_file_info.get('total', 1)}] "
-                    f"{percent:.1f}% ({time_str}) - {src_format} {src_res}"
-                )
+                payload = {"type": "file_progress"}
+                payload.update(progress)
+                self.progress_queue.put(payload)
             
             def progress_callback(current: int, total: int, filename: str):
-                """Batch progress callback"""
-                current_file_info["idx"] = current
-                current_file_info["total"] = total
                 filename_only = Path(filename).name
                 self.log(f"[{current+1}/{total}] Processing: {filename_only}")
+                self.progress_queue.put(
+                    {"type": "batch_start", "idx": current, "total": total, "filename": filename}
+                )
             
-            # Run batch conversion
             result = self.converter.convert_batch(
                 self.input_files,
                 self.output_folder.get(),
@@ -483,12 +799,9 @@ class MainWindow:
                 file_progress_callback=file_progress_callback
             )
             
-            # Show results
-            self.progress_bar["value"] = 100
-            self.progress_var.set("Conversion Complete")
+            self.progress_queue.put({"type": "done", "total": result.get("total", 0)})
             self.status_var.set(
-                f"Complete: Success {result['success']}/{result['total']}, "
-                f"Failed {result['failed']}"
+                f"Complete: {result['success']}/{result['total']} succeeded, {result['failed']} failed"
             )
             
             self.log(f"Conversion complete: Success {result['success']}, Failed {result['failed']}")
@@ -501,7 +814,6 @@ class MainWindow:
                     else:
                         self.log(f"  - {item}", "ERROR")
                 
-                # Show error details
                 last_error = self.converter.get_last_error()
                 if last_error:
                     self.log("--- Error Details ---", "ERROR")
@@ -519,11 +831,10 @@ class MainWindow:
             self.log(f"Conversion error: {e}", "ERROR")
             messagebox.showerror("Error", f"Error during conversion: {e}")
         finally:
-            # Reset UI state
             self.is_converting = False
             self.start_button.config(state="normal")
             self.stop_button.config(state="disabled")
-            self.progress_bar["value"] = 0
+            self.progress_queue.put({"type": "reset"})
     
     def stop_conversion(self):
         """Stop conversion"""
@@ -532,6 +843,95 @@ class MainWindow:
             self.stop_event.set()
             self.log("Stopping conversion...", "WARNING")
             self.status_var.set("Stopping...")
+    
+    def update_progress_display(self):
+        """Update progress bars from queue (main thread only)"""
+        try:
+            while True:
+                event = self.progress_queue.get_nowait()
+                etype = event.get("type")
+
+                if etype == "start":
+                    self._batch_idx = 0
+                    self._batch_total = int(event.get("total", 0) or 0)
+                    self._batch_filename = ""
+                    self.overall_progress_bar["value"] = 0
+                    self.file_progress_bar["value"] = 0
+                    self.overall_progress_var.set(f"Overall: 0/{self._batch_total}  0.0%")
+                    self.file_progress_var.set("File: 0.0%")
+
+                elif etype == "batch_start":
+                    self._batch_idx = int(event.get("idx", 0) or 0)
+                    self._batch_total = int(event.get("total", 0) or 0)
+                    self._batch_filename = str(event.get("filename", "") or "")
+
+                    self.file_progress_bar["value"] = 0
+                    filename_only = Path(self._batch_filename).name if self._batch_filename else ""
+                    self.file_progress_var.set(f"File: 0.0%  {filename_only}")
+
+                    overall = (self._batch_idx / self._batch_total) * 100 if self._batch_total else 0
+                    self.overall_progress_bar["value"] = overall
+                    self.overall_progress_var.set(
+                        f"Overall: {self._batch_idx + 1}/{self._batch_total}  {overall:.1f}%"
+                    )
+
+                elif etype == "file_progress":
+                    percent = event.get("percent", 0) or 0
+                    try:
+                        percent = float(percent)
+                    except Exception:
+                        percent = 0.0
+                    percent = max(0.0, min(100.0, percent))
+
+                    current_time = event.get("time", 0) or 0
+                    try:
+                        current_time = float(current_time)
+                    except Exception:
+                        current_time = 0.0
+                    mins = int(current_time // 60)
+                    secs = int(current_time % 60)
+                    time_str = f"{mins:02d}:{secs:02d}"
+
+                    info = event.get("video_info", {}) or {}
+                    src_format = info.get("format", "")
+                    src_codec = info.get("codec", "")
+                    src_res = ""
+                    if info.get("width", 0) and info.get("height", 0):
+                        src_res = f"{info.get('width', 0)}x{info.get('height', 0)}"
+
+                    filename_only = Path(self._batch_filename).name if self._batch_filename else ""
+                    details_parts = [p for p in [src_format, src_res, src_codec] if p]
+                    details = " ".join(details_parts)
+
+                    self.file_progress_bar["value"] = percent
+                    self.file_progress_var.set(
+                        f"File: {percent:.1f}%  {time_str}  {filename_only}" + (f"  ({details})" if details else "")
+                    )
+
+                    overall = ((self._batch_idx + percent / 100.0) / self._batch_total) * 100 if self._batch_total else 0
+                    overall = max(0.0, min(100.0, overall))
+                    self.overall_progress_bar["value"] = overall
+                    self.overall_progress_var.set(
+                        f"Overall: {self._batch_idx + 1}/{self._batch_total}  {overall:.1f}%"
+                    )
+
+                elif etype == "done":
+                    self.file_progress_bar["value"] = 100
+                    self.overall_progress_bar["value"] = 100
+                    total = int(event.get("total", self._batch_total) or 0)
+                    self.overall_progress_var.set(f"Overall: {total}/{total}  100.0%")
+                    self.file_progress_var.set("File: 100.0%")
+
+                elif etype == "reset":
+                    self.overall_progress_bar["value"] = 0
+                    self.file_progress_bar["value"] = 0
+                    self.overall_progress_var.set("Overall: 0/0  0.0%")
+                    self.file_progress_var.set("File: 0.0%")
+
+        except queue.Empty:
+            pass
+
+        self.root.after(100, self.update_progress_display)
     
     def run(self):
         """Run main loop"""
