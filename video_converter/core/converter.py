@@ -171,7 +171,7 @@ class VideoConverter:
         Returns:
             進度資訊字典或 None
         """
-        result = {}
+        result: Dict[str, Any] = {}
         
         # 解析 frame=xxx 格式
         frame_match = re.search(r'frame=\s*(\d+)', line)
@@ -190,6 +190,37 @@ class VideoConverter:
             # 計算百分比
             if duration > 0:
                 result["percent"] = min(100, (current_time / duration) * 100)
+
+        # 解析 speed=1.23x
+        speed_match = re.search(r'speed=\s*([0-9\.]+)x', line)
+        if speed_match:
+            try:
+                result["speed"] = float(speed_match.group(1))
+            except ValueError:
+                pass
+
+        # 解析 fps=123.4
+        fps_match = re.search(r'fps=\s*([0-9\.]+)', line)
+        if fps_match:
+            try:
+                result["fps"] = float(fps_match.group(1))
+            except ValueError:
+                pass
+
+        # 解析 bitrate=1234.5kbits/s
+        br_match = re.search(r'bitrate=\s*([^\s]+)', line)
+        if br_match:
+            result["bitrate"] = br_match.group(1)
+
+        # Estimate ETA (seconds)
+        if duration and ("time" in result) and ("speed" in result) and result.get("speed"):
+            try:
+                remaining_media = max(0.0, float(duration) - float(result["time"]))
+                speed = float(result["speed"])
+                if speed > 0:
+                    result["eta"] = remaining_media / speed
+            except Exception:
+                pass
         
         if result:
             result["raw_line"] = line
@@ -308,31 +339,25 @@ class VideoConverter:
         src_height = video_info.get("height", 0)
         duration = video_info.get("duration", 0)
         
-        # 如果解析度相同，直接複製檔案（不解碼）
-        if src_width == self.width and src_height == self.height and self.width > 0 and self.height > 0:
-            self._last_error = None
-            try:
-                import shutil
-                shutil.copy2(str(input_path), str(output_path))
-                self._last_error = "SKIPPED_SAME_RESOLUTION"
-
-                progress = {
-                    "percent": 100.0,
-                    "time": float(duration) if duration else 0.0,
-                    "video_info": video_info,
-                    "raw_line": ""
-                }
-                if hasattr(self, "_file_progress_callback") and self._file_progress_callback:
-                    self._file_progress_callback(progress)
-                if progress_callback:
-                    progress_callback(progress)
-                return True
-            except Exception as e:
-                self._last_error = f"Copy failed: {e}"
-                return False
-        
         # 取得編碼器
         encoder = self._get_encoder()
+
+        # Notify UI: conversion started
+        if hasattr(self, "_file_progress_callback") and self._file_progress_callback:
+            try:
+                self._file_progress_callback(
+                    {
+                        "percent": 0.0,
+                        "time": 0.0,
+                        "video_info": video_info,
+                        "encoder": encoder,
+                        "input": str(input_path),
+                        "output": str(output_path),
+                        "raw_line": ""
+                    }
+                )
+            except Exception:
+                pass
         
         # 建立命令
         command = self._build_ffmpeg_command(
@@ -376,6 +401,9 @@ class VideoConverter:
                     progress = self._parse_progress(line, duration)
                     if progress:
                         progress["video_info"] = video_info
+                        progress["encoder"] = encoder
+                        progress["input"] = str(input_path)
+                        progress["output"] = str(output_path)
                         if hasattr(self, "_file_progress_callback") and self._file_progress_callback:
                             self._file_progress_callback(progress)
                         if progress_callback:
@@ -470,12 +498,29 @@ class VideoConverter:
                 out_height = self.height
                 
                 # 生成輸出檔名
-                seq = self.sequence_manager.get_next()
-                if out_height > 0:
-                    output_filename = f"av-{out_height}p-{seq:04d}.mp4"
-                else:
-                    output_filename = f"av-{seq:04d}.mp4"
-                output_path = output_folder / output_filename
+                input_path_obj = Path(input_file)
+                while True:
+                    seq = self.sequence_manager.get_next()
+                    if out_height > 0:
+                        output_filename = f"av-{out_height}p-{seq:04d}.mp4"
+                    else:
+                        output_filename = f"av-{seq:04d}.mp4"
+                    output_path = output_folder / output_filename
+
+                    # Avoid output == input (FFmpeg cannot edit in-place)
+                    try:
+                        if output_path.resolve() == input_path_obj.resolve():
+                            continue
+                    except Exception:
+                        # If resolve fails, fall back to string compare
+                        if str(output_path) == str(input_path_obj):
+                            continue
+
+                    # Avoid accidental overwrite when sequence file was reset
+                    if output_path.exists():
+                        continue
+
+                    break
                 
                 # 轉換
                 if self.convert(str(input_file), str(output_path)):

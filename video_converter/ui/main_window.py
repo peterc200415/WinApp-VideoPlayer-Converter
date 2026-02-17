@@ -5,6 +5,7 @@ Professional GUI for video conversion
 import os
 import queue
 import threading
+import time
 from pathlib import Path
 from tkinter import (
     Tk, Frame, Label, Button, Text, Scrollbar,
@@ -17,6 +18,7 @@ from ..core.config import Config
 from ..core.encoder_detector import EncoderDetector
 from ..core.sequence_manager import SequenceManager
 from ..utils.file_utils import format_file_size, get_video_files
+from ..utils.system_monitor import SystemMonitor
 
 
 class MainWindow:
@@ -46,8 +48,9 @@ class MainWindow:
         """
         self.root = root
         self.root.title("Video Converter Pro")
-        self.root.geometry("950x750")
-        self.root.minsize(800, 600)
+        # Give more vertical room so progress/log are visible
+        self.root.geometry("950x900")
+        self.root.minsize(820, 700)
         
         # Apply dark theme
         self.root.configure(bg=self.COLORS["bg_primary"])
@@ -67,10 +70,15 @@ class MainWindow:
         self.stop_event = threading.Event()
         self.log_queue = queue.Queue()
         self.progress_queue = queue.Queue()
+        self.system_queue = queue.Queue()
 
         self._batch_idx = 0
         self._batch_total = 0
         self._batch_filename = ""
+
+        self._system_monitor = SystemMonitor()
+        self._system_thread = threading.Thread(target=self._system_poll_thread, daemon=True)
+        self._system_thread.start()
         
         # Apply custom styles
         self.setup_styles()
@@ -79,6 +87,7 @@ class MainWindow:
         self.create_widgets()
         self.update_log_display()
         self.update_progress_display()
+        self.update_system_display()
         
         # Load config
         self.load_config_to_ui()
@@ -87,6 +96,13 @@ class MainWindow:
         """Setup custom ttk styles"""
         style = ttk.Style()
         style.theme_use("clam")
+
+        # Make Combobox dropdown list readable
+        # (Tk uses a separate Listbox for the dropdown; configure via option_add)
+        self.root.option_add("*TCombobox*Listbox.background", self.COLORS["bg_tertiary"])
+        self.root.option_add("*TCombobox*Listbox.foreground", self.COLORS["text_primary"])
+        self.root.option_add("*TCombobox*Listbox.selectBackground", self.COLORS["accent"])
+        self.root.option_add("*TCombobox*Listbox.selectForeground", "white")
         
         # Configure main frame
         style.configure(".", 
@@ -118,6 +134,36 @@ class MainWindow:
             lightcolor=self.COLORS["bg_tertiary"],
             darkcolor=self.COLORS["bg_tertiary"],
         )
+
+        style.map(
+            "TCombobox",
+            fieldbackground=[
+                ("readonly", self.COLORS["bg_tertiary"]),
+                ("!disabled", self.COLORS["bg_tertiary"]),
+            ],
+            foreground=[
+                ("readonly", self.COLORS["text_primary"]),
+                ("!disabled", self.COLORS["text_primary"]),
+            ],
+            selectbackground=[("!disabled", self.COLORS["accent"])],
+            selectforeground=[("!disabled", "white")],
+        )
+
+        # Configure Entry / Spinbox so text is visible
+        style.configure(
+            "TEntry",
+            fieldbackground=self.COLORS["bg_tertiary"],
+            foreground=self.COLORS["text_primary"],
+            bordercolor=self.COLORS["border"],
+            insertcolor=self.COLORS["text_primary"],
+        )
+        style.configure(
+            "TSpinbox",
+            fieldbackground=self.COLORS["bg_tertiary"],
+            foreground=self.COLORS["text_primary"],
+            bordercolor=self.COLORS["border"],
+            insertcolor=self.COLORS["text_primary"],
+        )
         # Configure Progressbar
         style.configure("Horizontal.TProgressbar",
             background=self.COLORS["accent"],
@@ -136,12 +182,12 @@ class MainWindow:
     def create_widgets(self):
         """Create UI widgets"""
         # Main frame with padding
-        main_frame = Frame(self.root, bg=self.COLORS["bg_primary"], padx=15, pady=15)
+        main_frame = Frame(self.root, bg=self.COLORS["bg_primary"], padx=10, pady=10)
         main_frame.pack(fill="both", expand=True)
         
         # ==================== HEADER ====================
         header_frame = Frame(main_frame, bg=self.COLORS["bg_primary"])
-        header_frame.pack(fill="x", pady=(0, 15))
+        header_frame.pack(fill="x", pady=(0, 10))
         
         # Logo/Icon area
         icon_label = Label(
@@ -172,13 +218,29 @@ class MainWindow:
             bg=self.COLORS["bg_primary"],
             fg=self.COLORS["text_secondary"]
         ).pack(anchor="w")
+
+        # System stats (right)
+        stats_frame = Frame(header_frame, bg=self.COLORS["bg_primary"])
+        stats_frame.pack(side="right", padx=(10, 0))
+        self.system_var = StringVar(value="CPU: --%   GPU: --%   RAM: --%")
+        self.system_label = Label(
+            stats_frame,
+            textvariable=self.system_var,
+            font=("Segoe UI", 9),
+            bg=self.COLORS["bg_tertiary"],
+            fg=self.COLORS["text_primary"],
+            padx=12,
+            pady=6,
+            relief="flat"
+        )
+        self.system_label.pack(anchor="e")
         
         # ==================== FILE SELECTION ====================
         file_frame = self.create_section_frame(main_frame, "📁 Input Files")
         
         # File selection buttons
         btn_frame = Frame(file_frame, bg=self.COLORS["bg_secondary"])
-        btn_frame.pack(fill="x", pady=(0, 10))
+        btn_frame.pack(fill="x", pady=(0, 6))
         
         self.create_modern_button(
             btn_frame, "Select Files", self.select_files,
@@ -194,19 +256,29 @@ class MainWindow:
         self.file_count_label = self.create_info_label(
             file_frame, "No files selected"
         )
-        
-        # ==================== OUTPUT SETTINGS ====================
-        output_frame = self.create_section_frame(main_frame, "💾 Output Settings")
-        
-        output_btn_frame = Frame(output_frame, bg=self.COLORS["bg_secondary"])
-        output_btn_frame.pack(fill="x", pady=(0, 10))
-        
+
+        # Output settings (moved into Input Files section)
+        divider = Frame(file_frame, bg=self.COLORS["border"], height=1)
+        divider.pack(fill="x", pady=(8, 8))
+
+        out_row = Frame(file_frame, bg=self.COLORS["bg_secondary"])
+        out_row.pack(fill="x", pady=(0, 4))
+
+        Label(
+            out_row,
+            text="Output Folder:",
+            font=("Segoe UI", 10),
+            bg=self.COLORS["bg_secondary"],
+            fg=self.COLORS["text_secondary"],
+            anchor="w",
+        ).pack(side="left", padx=(0, 10))
+
         self.create_modern_button(
-            output_btn_frame, "Choose Output Folder", self.select_output_folder,
+            out_row, "Choose...", self.select_output_folder,
             icon="📂"
         ).pack(side="left")
-        
-        self.output_label = self.create_info_label(output_frame, "No folder selected")
+
+        self.output_label = self.create_info_label(file_frame, "No output folder selected")
         
         # ==================== CONVERSION SETTINGS ====================
         settings_frame = self.create_section_frame(main_frame, "⚙️ Conversion Settings")
@@ -216,7 +288,7 @@ class MainWindow:
         
         # ==================== CONTROL BUTTONS ====================
         control_frame = Frame(main_frame, bg=self.COLORS["bg_primary"])
-        control_frame.pack(fill="x", pady=15)
+        control_frame.pack(fill="x", pady=10)
         
         self.start_button = self.create_primary_button(
             control_frame, "▶ Start Conversion", self.start_conversion
@@ -228,11 +300,13 @@ class MainWindow:
         )
         self.stop_button.pack(side="left")
         
-        # ==================== PROGRESS SECTION ====================
-        self.create_progress_section(main_frame)
-        
-        # ==================== LOG SECTION ====================
-        self.create_log_section(main_frame)
+        # ==================== PROGRESS + LOG ====================
+        lower_frame = Frame(main_frame, bg=self.COLORS["bg_primary"])
+        lower_frame.pack(fill="both", expand=True, pady=(0, 0))
+
+        # Progress sits on top, log takes the rest.
+        self.create_progress_section(lower_frame)
+        self.create_log_section(lower_frame)
         
         # ==================== STATUS BAR ====================
         self.status_var = StringVar(value="Ready")
@@ -247,12 +321,12 @@ class MainWindow:
             pady=5,
             relief="flat"
         )
-        self.status_label.pack(fill="x", pady=(10, 0))
+        self.status_label.pack(fill="x", pady=(8, 0))
     
     def create_section_frame(self, parent, title):
         """Create a section frame with title"""
-        frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=15, pady=10)
-        frame.pack(fill="x", pady=(0, 10))
+        frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=12, pady=8)
+        frame.pack(fill="x", pady=(0, 8))
         
         Label(
             frame,
@@ -261,7 +335,7 @@ class MainWindow:
             bg=self.COLORS["bg_secondary"],
             fg=self.COLORS["accent"],
             anchor="w"
-        ).pack(fill="x", pady=(0, 10))
+        ).pack(fill="x", pady=(0, 6))
         
         inner = Frame(frame, bg=self.COLORS["bg_secondary"])
         inner.pack(fill="x")
@@ -280,7 +354,7 @@ class MainWindow:
             activeforeground="white",
             relief="flat",
             padx=15,
-            pady=8,
+            pady=6,
             cursor="hand2"
         )
         return btn
@@ -298,7 +372,7 @@ class MainWindow:
             activeforeground="white",
             relief="flat",
             padx=25,
-            pady=10,
+            pady=8,
             cursor="hand2"
         )
         return btn
@@ -316,7 +390,7 @@ class MainWindow:
             activeforeground="white",
             relief="flat",
             padx=25,
-            pady=10,
+            pady=8,
             cursor="hand2",
             state="disabled"
         )
@@ -333,7 +407,7 @@ class MainWindow:
             anchor="w",
             padx=5
         )
-        label.pack(fill="x", pady=5)
+        label.pack(fill="x", pady=3)
         return label
     
     def create_setting_row(self, parent, label_text, row, widget_frame):
@@ -358,6 +432,7 @@ class MainWindow:
             "Original": (0, 0),
             "4K (3840x2160)": (3840, 2160),
             "1080p (1920x1080)": (1920, 1080),
+            "900p (1600x900)": (1600, 900),
             "720p (1280x720)": (1280, 720),
             "480p (854x480)": (854, 480),
             "360p (640x360)": (640, 360),
@@ -477,7 +552,7 @@ class MainWindow:
         
         RESOLUTION_PRESETS = {
             "Original": (0, 0), "4K (3840x2160)": (3840, 2160),
-            "1080p (1920x1080)": (1920, 1080), "720p (1280x720)": (1280, 720),
+            "1080p (1920x1080)": (1920, 1080), "900p (1600x900)": (1600, 900), "720p (1280x720)": (1280, 720),
             "480p (854x480)": (854, 480), "360p (640x360)": (640, 360),
         }
         
@@ -538,67 +613,48 @@ class MainWindow:
         
     def create_progress_section(self, parent):
         """Create progress display section"""
-        progress_frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=15, pady=10)
-        progress_frame.pack(fill="x", pady=(0, 10))
-        
-        # Overall progress
+        progress_frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=12, pady=8)
+        progress_frame.pack(fill="x", pady=(0, 8))
+
         Label(
             progress_frame,
-            text="📊 Overall Progress",
+            text="📈 Progress",
             font=("Segoe UI", 10, "bold"),
             bg=self.COLORS["bg_secondary"],
             fg=self.COLORS["accent"],
             anchor="w"
-        ).pack(fill="x", pady=(0, 5))
-        
+        ).pack(fill="x", pady=(0, 6))
+
+        # Overall row
         self.overall_progress_var = StringVar(value="Overall: 0/0  0.0%")
         Label(
             progress_frame,
             textvariable=self.overall_progress_var,
             font=("Segoe UI", 9),
             bg=self.COLORS["bg_secondary"],
-            fg=self.COLORS["text_secondary"]
-        ).pack(anchor="w", pady=(0, 3))
-        
-        self.overall_progress_bar = ttk.Progressbar(
-            progress_frame,
-            mode="determinate",
-            maximum=100,
-            length=100
-        )
-        self.overall_progress_bar.pack(fill="x", pady=(0, 10))
-        
-        # File progress
-        Label(
-            progress_frame,
-            text="📄 Current File",
-            font=("Segoe UI", 10, "bold"),
-            bg=self.COLORS["bg_secondary"],
-            fg=self.COLORS["accent"],
-            anchor="w"
-        ).pack(fill="x", pady=(0, 5))
-        
+            fg=self.COLORS["text_secondary"],
+            anchor="w",
+        ).pack(fill="x", pady=(0, 2))
+        self.overall_progress_bar = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
+        self.overall_progress_bar.pack(fill="x", pady=(0, 6))
+
+        # File row
         self.file_progress_var = StringVar(value="File: 0.0%")
         Label(
             progress_frame,
             textvariable=self.file_progress_var,
             font=("Segoe UI", 9),
             bg=self.COLORS["bg_secondary"],
-            fg=self.COLORS["text_secondary"]
-        ).pack(anchor="w", pady=(0, 3))
-        
-        self.file_progress_bar = ttk.Progressbar(
-            progress_frame,
-            mode="determinate",
-            maximum=100,
-            length=100
-        )
+            fg=self.COLORS["text_secondary"],
+            anchor="w",
+        ).pack(fill="x", pady=(0, 2))
+        self.file_progress_bar = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
         self.file_progress_bar.pack(fill="x")
     
     def create_log_section(self, parent):
         """Create log display section"""
-        log_frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=15, pady=10)
-        log_frame.pack(fill="both", expand=True, pady=(0, 10))
+        log_frame = Frame(parent, bg=self.COLORS["bg_secondary"], padx=12, pady=8)
+        log_frame.pack(fill="both", expand=True, pady=(0, 0))
         
         Label(
             log_frame,
@@ -607,7 +663,7 @@ class MainWindow:
             bg=self.COLORS["bg_secondary"],
             fg=self.COLORS["accent"],
             anchor="w"
-        ).pack(fill="x", pady=(0, 5))
+        ).pack(fill="x", pady=(0, 6))
         
         log_text_frame = Frame(log_frame, bg=self.COLORS["bg_secondary"])
         log_text_frame.pack(fill="both", expand=True)
@@ -636,16 +692,62 @@ class MainWindow:
     def update_log_display(self):
         """Update log display"""
         try:
-            while not self.log_queue.empty():
-                message = self.log_queue.get_nowait()
-                self.log_text.config(state="normal")
-                self.log_text.insert("end", message + "\n")
-                self.log_text.see("end")
-                self.log_text.config(state="disabled")
-        except queue.Empty:
+            while True:
+                try:
+                    message = self.log_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self.log_text.config(state="normal")
+                    self.log_text.insert("end", message + "\n")
+                    self.log_text.see("end")
+                    self.log_text.config(state="disabled")
+                except Exception:
+                    # If UI is not ready, drop the message.
+                    pass
+        finally:
+            self.root.after(100, self.update_log_display)
+
+    def _system_poll_thread(self) -> None:
+        """Poll system stats in background thread."""
+        while True:
+            try:
+                stats = self._system_monitor.snapshot()
+                # keep only latest
+                while not self.system_queue.empty():
+                    try:
+                        self.system_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self.system_queue.put(stats)
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    def update_system_display(self) -> None:
+        """Update system stats label from queue (main thread)."""
+        try:
+            stats = None
+            while not self.system_queue.empty():
+                stats = self.system_queue.get_nowait()
+
+            if stats is not None:
+                cpu = "--" if stats.cpu_percent is None else f"{stats.cpu_percent:.0f}"
+                ram = "--" if stats.ram_percent is None else f"{stats.ram_percent:.0f}"
+                gpu = "--" if stats.gpu_percent is None else f"{stats.gpu_percent:.0f}"
+
+                # If encode/decode numbers exist (common for NVIDIA / some Windows counters), show them.
+                extra = ""
+                if stats.gpu_encode_percent is not None or stats.gpu_decode_percent is not None:
+                    enc = "--" if stats.gpu_encode_percent is None else f"{stats.gpu_encode_percent:.0f}"
+                    dec = "--" if stats.gpu_decode_percent is None else f"{stats.gpu_decode_percent:.0f}"
+                    extra = f" (E:{enc} D:{dec})"
+
+                self.system_var.set(f"CPU: {cpu}%   GPU: {gpu}%{extra}   RAM: {ram}%")
+        except Exception:
             pass
-        
-        self.root.after(100, self.update_log_display)
+
+        self.root.after(500, self.update_system_display)
     
     def get_video_info_summary(self, file_path: str) -> str:
         """Get video info summary for display"""
@@ -654,7 +756,22 @@ class MainWindow:
             vc = VideoConverter()
             info = vc.get_video_info(file_path)
             if info.get('width', 0) > 0:
-                return f"{info['width']}x{info['height']} {info.get('codec', '?')} {info.get('format', '?')}"
+                dur = info.get("duration", 0) or 0
+                try:
+                    dur = float(dur)
+                except Exception:
+                    dur = 0
+
+                dur_str = ""
+                if dur > 0:
+                    total_sec = int(dur + 0.5)
+                    h = total_sec // 3600
+                    m = (total_sec % 3600) // 60
+                    s = total_sec % 60
+                    dur_str = f"{h:d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+
+                base = f"{info['width']}x{info['height']} {info.get('codec', '?')} {info.get('format', '?')}"
+                return f"{base} {dur_str}".rstrip()
         except Exception:
             pass
         return ""
@@ -776,6 +893,7 @@ class MainWindow:
         try:
             self.log("Starting batch conversion...")
             self.status_var.set("Converting...")
+            self.log("Working...", "INFO")
             
             self.progress_queue.put({"type": "start", "total": len(self.input_files)})
             
@@ -848,7 +966,11 @@ class MainWindow:
         """Update progress bars from queue (main thread only)"""
         try:
             while True:
-                event = self.progress_queue.get_nowait()
+                try:
+                    event = self.progress_queue.get_nowait()
+                except queue.Empty:
+                    break
+
                 etype = event.get("type")
 
                 if etype == "start":
@@ -856,6 +978,11 @@ class MainWindow:
                     self._batch_total = int(event.get("total", 0) or 0)
                     self._batch_filename = ""
                     self.overall_progress_bar["value"] = 0
+                    try:
+                        self.file_progress_bar.stop()
+                        self.file_progress_bar.config(mode="determinate")
+                    except Exception:
+                        pass
                     self.file_progress_bar["value"] = 0
                     self.overall_progress_var.set(f"Overall: 0/{self._batch_total}  0.0%")
                     self.file_progress_var.set("File: 0.0%")
@@ -865,9 +992,17 @@ class MainWindow:
                     self._batch_total = int(event.get("total", 0) or 0)
                     self._batch_filename = str(event.get("filename", "") or "")
 
+                    # Show indeterminate until we receive real %
+                    try:
+                        self.file_progress_bar.config(mode="indeterminate")
+                        self.file_progress_bar.start(10)
+                    except Exception:
+                        pass
                     self.file_progress_bar["value"] = 0
                     filename_only = Path(self._batch_filename).name if self._batch_filename else ""
-                    self.file_progress_var.set(f"File: 0.0%  {filename_only}")
+                    self.file_progress_var.set(f"File: working...  {filename_only}")
+                    if filename_only:
+                        self.status_var.set(f"Working: {filename_only}")
 
                     overall = (self._batch_idx / self._batch_total) * 100 if self._batch_total else 0
                     self.overall_progress_bar["value"] = overall
@@ -883,6 +1018,13 @@ class MainWindow:
                         percent = 0.0
                     percent = max(0.0, min(100.0, percent))
 
+                    # Switch to determinate once we have a % value.
+                    try:
+                        self.file_progress_bar.stop()
+                        self.file_progress_bar.config(mode="determinate")
+                    except Exception:
+                        pass
+
                     current_time = event.get("time", 0) or 0
                     try:
                         current_time = float(current_time)
@@ -892,7 +1034,38 @@ class MainWindow:
                     secs = int(current_time % 60)
                     time_str = f"{mins:02d}:{secs:02d}"
 
+                    # total duration if available
                     info = event.get("video_info", {}) or {}
+                    total_dur = info.get("duration", 0) or 0
+                    try:
+                        total_dur = float(total_dur)
+                    except Exception:
+                        total_dur = 0.0
+                    total_str = ""
+                    if total_dur > 0:
+                        tmins = int(total_dur // 60)
+                        tsecs = int(total_dur % 60)
+                        total_str = f"/{tmins:02d}:{tsecs:02d}"
+
+                    speed = event.get("speed", None)
+                    speed_str = ""
+                    if speed is not None:
+                        try:
+                            speed_str = f"  {float(speed):.2f}x"
+                        except Exception:
+                            speed_str = ""
+
+                    eta = event.get("eta", None)
+                    eta_str = ""
+                    if eta is not None:
+                        try:
+                            eta_f = float(eta)
+                            em = int(eta_f // 60)
+                            es = int(eta_f % 60)
+                            eta_str = f"  ETA {em:02d}:{es:02d}"
+                        except Exception:
+                            eta_str = ""
+
                     src_format = info.get("format", "")
                     src_codec = info.get("codec", "")
                     src_res = ""
@@ -903,10 +1076,18 @@ class MainWindow:
                     details_parts = [p for p in [src_format, src_res, src_codec] if p]
                     details = " ".join(details_parts)
 
+                    encoder = event.get("encoder", "") or ""
+                    if encoder:
+                        details = (details + "  " if details else "") + f"enc:{encoder}"
+
                     self.file_progress_bar["value"] = percent
                     self.file_progress_var.set(
-                        f"File: {percent:.1f}%  {time_str}  {filename_only}" + (f"  ({details})" if details else "")
+                        f"File: {percent:.1f}%  {time_str}{total_str}{speed_str}{eta_str}  {filename_only}" + (f"  ({details})" if details else "")
                     )
+
+                    # Status bar indicates active work
+                    if filename_only:
+                        self.status_var.set(f"Working: {filename_only}  {percent:.1f}%")
 
                     overall = ((self._batch_idx + percent / 100.0) / self._batch_total) * 100 if self._batch_total else 0
                     overall = max(0.0, min(100.0, overall))
@@ -916,22 +1097,33 @@ class MainWindow:
                     )
 
                 elif etype == "done":
+                    try:
+                        self.file_progress_bar.stop()
+                        self.file_progress_bar.config(mode="determinate")
+                    except Exception:
+                        pass
                     self.file_progress_bar["value"] = 100
                     self.overall_progress_bar["value"] = 100
                     total = int(event.get("total", self._batch_total) or 0)
                     self.overall_progress_var.set(f"Overall: {total}/{total}  100.0%")
                     self.file_progress_var.set("File: 100.0%")
+                    self.status_var.set("Idle")
 
                 elif etype == "reset":
+                    try:
+                        self.file_progress_bar.stop()
+                        self.file_progress_bar.config(mode="determinate")
+                    except Exception:
+                        pass
                     self.overall_progress_bar["value"] = 0
                     self.file_progress_bar["value"] = 0
                     self.overall_progress_var.set("Overall: 0/0  0.0%")
                     self.file_progress_var.set("File: 0.0%")
-
-        except queue.Empty:
-            pass
-
-        self.root.after(100, self.update_progress_display)
+                    self.status_var.set("Ready")
+        except Exception as e:
+            self.log(f"Progress UI error: {e}", "ERROR")
+        finally:
+            self.root.after(100, self.update_progress_display)
     
     def run(self):
         """Run main loop"""

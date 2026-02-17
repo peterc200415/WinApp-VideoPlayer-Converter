@@ -16,13 +16,15 @@ A full-featured video conversion tool with hardware acceleration support and mod
   - Intelligent encoder selection
 
 - **Modern UI**
-  - Real-time progress percentage display
-  - Source video format info (resolution, codec)
+  - Dual progress bars (overall + per-file)
+  - Real-time progress: percent, elapsed, speed, ETA
+  - Source video info (container, codec, resolution, duration)
   - Live log output
+  - CPU / GPU / RAM live utilization (Windows best-effort)
   - Batch conversion statistics
 
 - **Flexible Settings**
-  - Resolution presets (4K, 1080p, 720p, 480p, 360p)
+  - Resolution presets (4K, 1080p, 900p, 720p, 480p, 360p)
   - Custom width/height input
   - Bitrate or CRF quality mode
   - Preset speed (ultrafast to veryslow)
@@ -58,11 +60,11 @@ python main.py
    - Click "Select Files" to choose one or multiple video files
    - Click "Select Folder" to batch process all videos in a folder
 
-2. **Output Settings**
-   - Click "Select Output Folder" to specify where converted files will be saved
+2. **Output Folder**
+   - Set output folder in the **Input Files** section (Choose...)
 
 3. **Conversion Settings**
-   - **Resolution**: Choose from presets (4K, 1080p, 720p, 480p, 360p) or enter custom WxH
+   - **Resolution**: Choose from presets (4K, 1080p, 900p, 720p, 480p, 360p) or enter custom WxH
    - **Bitrate**: Set video bitrate (e.g., 1000k, 2000k)
    - **Use CRF Quality Mode**: Enable for quality-based encoding (0-51, lower = better quality)
    - **Encoder**: Select encoder (auto for automatic best selection)
@@ -158,6 +160,15 @@ The app automatically creates `config.json` to store settings:
 - Verify output folder has write permissions
 - Check error details in log area
 
+### Progress Looks Stuck
+- The per-file bar switches to an indeterminate state until FFmpeg reports progress.
+- If the input duration cannot be detected, ETA/percent may be unavailable.
+
+### CPU/GPU Utilization Seems Wrong
+- RAM is read from Windows API.
+- CPU/GPU are best-effort and depend on Windows performance counters / drivers.
+- NVIDIA GPUs use `nvidia-smi` when available.
+
 ### NVIDIA Driver Issue
 - If NVENC fails, update NVIDIA driver to 570.0 or newer
 - Or use AMD/Intel hardware acceleration instead
@@ -181,6 +192,14 @@ Issues and Pull Requests are welcome!
 - Added source video format display
 - Changed output filename format to include height (av-720p-0001.mp4)
 - UI language: English
+
+### v1.2.0
+- UI redesign (compact, professional layout)
+- Output folder moved into Input Files section
+- Dual progress bars (overall + per-file) with real-time speed/ETA
+- Source file selection info now includes duration
+- Live CPU/GPU/RAM utilization in the header
+- Added 900p (1600x900) preset
 
 ### v1.0.0
 - Initial release
